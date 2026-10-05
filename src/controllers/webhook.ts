@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import { reviewPullRequest } from "src/services/reviewPr";
+import { ReviewJob } from "src/types/review";
 
 const HANDLED_ACTIONS = ["opened", "synchronize", "reopened", "edited"];
 
@@ -17,12 +18,14 @@ export function webhookController(req: Request, res: Response) {
         return res.status(200).send("ok");
     }
 
-    reviewPullRequest({
+    res.status(200).send("ok");
+
+    const job: ReviewJob = {
         installationId: payload.installation.id,
         owner: payload.repository.owner.login,
         repo: payload.repository.name,
         prNumber: payload.pull_request.number,
-    }).catch((err) => logger.error("Review failed", err));
+    };
 
-    res.status(200).send("ok");
+    reviewPullRequest(job).catch((err) => logger.error("Review failed", err));
 }
