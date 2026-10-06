@@ -2,19 +2,20 @@
 
 **Goal:** a live GitHub App that reviews pull requests with LLM agents, with reliable webhook handling (idempotency, retries, dedup).
 
-Stack: TypeScript, Node.js, Express, BullMQ, Redis, PostgreSQL, `openai` npm client (Gemini by default), Octokit, zod, Vitest + Testcontainers, Docker Compose, Nginx, GitHub Actions.
+Stack: TypeScript, Node.js, Express, BullMQ, Redis, PostgreSQL, LangGraph.js, LangChain.js, LangSmith, Octokit, zod, Vitest + Testcontainers, Docker Compose, Nginx, GitHub Actions.
 
 ## LLM Provider
 
-- Use the `openai` client with a configurable base URL. Gemini is the default, and any OpenAI-compatible provider (Ollama, DeepSeek, OpenRouter) works by changing `LLM_BASE_URL`, `LLM_API_KEY` and `LLM_MODEL`. Anthropic's OpenAI-compatible endpoint (`https://api.anthropic.com/v1/`) can be used the same way for the eval comparison.
-
-- A small helper retries on 429/5xx with backoff. The provider and model used are logged per review.
-
-- The agent loop takes the client as a parameter, so tests pass a scripted fake client and run offline.
+- **One interface:** all application code depends on LangChain's `BaseChatModel` and never on a provider class. A single factory, `createChatModel()`, reads the environment and is the only place that names a provider.
+- **Configuration:** `LLM_PROVIDER`, `LLM_MODEL` and `LLM_API_KEY`, plus `LLM_BASE_URL` for `openai-compatible`.
+    - `openai-compatible` (default): `ChatOpenAI` with a custom base URL. Gemini is the default (through its OpenAI-compatible endpoint), and Ollama, DeepSeek and OpenRouter work by changing the variables.
+    - `anthropic`: `ChatAnthropic`, with no code changes elsewhere.
+- **Retries:** transient LLM errors (429/5xx) are retried by the model's built-in retry (`maxRetries`) with backoff.
+- **Observability and tests:** the provider and model are recorded on every LangSmith trace and in the `usage` table. Tests inject a fake `BaseChatModel` that returns scripted responses (including tool calls) and run offline.
 
 ## Review Design
 
-**Lenses:** One agent loop, run once per lens. Each lens is a config of `{ id, systemPrompt, severityRubric }`. Lenses run in parallel, then findings are merged, deduped and ranked.
+**Lenses:** One agent (a LangGraph subgraph), run once per lens and diff batch. Each lens is a config of `{ id, systemPrompt, severityRubric }`. Lenses run in parallel, then findings are merged, deduped and ranked.
 
 | Lens       | Question                                         | Persona                                       | Categories it reports |
 | ---------- | ------------------------------------------------ | --------------------------------------------- | --------------------- |
@@ -86,7 +87,7 @@ Shared rules (appended to every lens prompt):
 - Return findings as JSON matching the schema.
 ```
 
-**Retrieval:** Two tools: `search_code` (ripgrep on a shallow checkout) and `read_file(path, ref, offset, limit)`, where `ref` picks which version of the file to read: `base` (the file as it was before the PR) or `head` (the file as it is after the PR's latest commit). Confine paths to the checkout and never run PR code.
+**Retrieval:** Two LangChain tools (defined with `tool()` and zod schemas): `search_code` (ripgrep on a shallow checkout) and `read_file(path, ref, offset, limit)`, where `ref` picks which version of the file to read: `base` (the file as it was before the PR) or `head` (the file as it is after the PR's latest commit). Confine paths to the checkout and never run PR code.
 
 **Large diffs:**
 
@@ -107,58 +108,108 @@ Shared rules (appended to every lens prompt):
 
 ## Orchestration flow
 
-The orchestration is plain code. Only the agent loop inside each lens is model-driven. Lenses never talk to each other: each has its own conversation, and their findings meet only at the merge step.
+The pipeline is a LangGraph `StateGraph`. Deterministic steps are ordinary nodes. The model-driven steps run as one worker per lens and diff batch, fanned out with `Send` (the orchestrator-worker pattern). Lenses never talk to each other: each worker has its own conversation, and their findings meet only at the merge node.
+
+**LangGraph features used**
+
+| Feature                                                                                    | Where                                                                |
+| ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| `StateGraph` with a typed state schema (zod)                                               | The whole pipeline                                                   |
+| Reducers (`ReducedValue`)                                                                  | Worker findings and lens failures are concatenated into shared state |
+| `Send`                                                                                     | Fan-out: one worker per batch × enabled lens                         |
+| `Command` (`update` + `goto`)                                                              | The stale-check node routes to `post` or ends the run                |
+| Subgraph with `ToolNode` and conditional edges                                             | Each lens agent (the agents-with-tools pattern)                      |
+| `retryPolicy` on nodes                                                                     | `prepare`, `post` and `save` (transient GitHub and database errors)  |
+| Recursion limit                                                                            | The agent's step limit                                               |
+| Postgres checkpointer                                                                      | A retried job resumes from the last completed node                   |
+| Node and graph testing (`graph.nodes`, `MemorySaver`, `updateState` with `interruptAfter`) | Test suite                                                           |
+| LangSmith tracing                                                                          | One trace per review                                                 |
+
+**State:** State holds raw data only. Prompts and the comment text are formatted inside nodes.
+
+| Key                                             | Contents                                             | Updated by   |
+| ----------------------------------------------- | ---------------------------------------------------- | ------------ |
+| `repo`, `prNumber`, `headSha`                   | Job input                                            | Input        |
+| `title`, `description`, `files`, `skippedFiles` | The PR as fetched, after skip rules                  | `prepare`    |
+| `batches`                                       | File groups under the token budget                   | `chunk`      |
+| `findings`                                      | Raw findings from all workers (reducer: concatenate) | Lens workers |
+| `lensFailures`                                  | IDs of lenses that failed (reducer: concatenate)     | Lens workers |
+| `verifiedFindings`                              | Findings whose evidence matches the cited lines      | `verify`     |
+| `mergedFindings`                                | Findings with duplicates removed, sorted by severity | `merge`      |
 
 #### Pipeline
 
 ```mermaid
 flowchart TD
     A["GitHub PR event: opened, synchronize, reopened, edited"] --> B["Express /webhook<br/>verify signature, dedupe delivery ID, enqueue, return 200"]
-    B --> C["BullMQ queue<br/>job: repo, PR number, headSha"]
-    C --> D["1. Prepare<br/>diff, base and head checkout, skip rules, token estimate"]
-    D --> E["2. Chunk<br/>fits budget: one batch, otherwise several"]
-    E --> F["3. Fan out<br/>every batch x lens in parallel, Promise.allSettled"]
-    F --> G1["security loop"]
-    F --> G2["quality loop"]
-    F --> G3["tests loop"]
-    G1 --> H["4. Verify citations"]
-    G2 --> H
-    G3 --> H
-    H --> I["5. Merge<br/>dedupe, rank"]
-    I --> J{"6. Is the PR still at the commit we reviewed? (head SHA unchanged)"}
-    J -- no --> K["Discard result"]
-    J -- yes --> L["7. Create or edit the single comment, save to Postgres"]
+    B --> C["BullMQ queue<br/>job: repo, PR number, headSha, delivery ID"]
+    C --> D["prepare<br/>diff, base and head checkout, skip rules, PR title and description"]
+    D --> E["chunk<br/>token estimate, fits budget: one batch, otherwise several"]
+    E -- "Send: one worker per batch x lens" --> G1["security worker"]
+    E -- "Send" --> G2["quality worker"]
+    E -- "Send" --> G3["tests worker"]
+    G1 -- "findings reducer" --> H["verify<br/>check citations"]
+    G2 -- "findings reducer" --> H
+    G3 -- "findings reducer" --> H
+    H --> I["merge<br/>LLM groups duplicates, sort by severity"]
+    I --> J{"stale check<br/>head SHA unchanged? (is the PR still at the commit we reviewed?)"}
+    J -- "no: Command goto END" --> K["END: discard result"]
+    J -- "yes: Command goto post" --> L["post<br/>create or edit the single comment"]
+    L --> M["save<br/>reviews, findings, usage to Postgres"]
+    M --> N["END"]
 ```
 
-#### Agent loop inside one lens and batch
+#### Lens worker (subgraph, one per lens and batch)
 
 ```mermaid
 flowchart TD
-    A["Inputs: lens prompt + shared rules, PR header, diff batch"]
-    A --> B["LLM call<br/>on 429 or 5xx: retry with backoff"]
-    B --> C{"Did the model ask for tools?"}
-    C -- yes --> D["Run search_code or read_file<br/>add results to the conversation"]
-    D --> B
-    C -- no --> E["Model returns JSON findings"]
-    E --> F{"zod valid?"}
-    F -- no --> G["Retry once with the error message, then drop"]
-    F -- yes --> H["Return findings"]
+    S["Input: lens prompt + shared rules, PR header, diff batch"] --> L["llmCall<br/>model with tools bound"]
+    L --> T{"tool calls, and under the step and token limits?"}
+    T -- yes --> R["toolNode<br/>search_code, read_file"]
+    R --> L
+    T -- no --> O["report<br/>structured output with the zod findings schema"]
+    O --> V{"valid?"}
+    V -- "no, first time: error stored in state" --> O
+    V -- "no, second time" --> X["return no findings"]
+    V -- yes --> D["return findings"]
 ```
+
+#### Error handling
+
+| Error                                                   | Handled by                                                                                                                            |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Transient (GitHub, database, network)                   | `retryPolicy` on `prepare`, `post` and `save`                                                                                         |
+| Transient LLM errors (429/5xx)                          | The chat model's built-in retry with backoff                                                                                          |
+| LLM-recoverable (tool error, invalid structured output) | The error goes back into state or the tool result and the model tries again, once for structured output                               |
+| A lens fails after its retries                          | The worker catches it, adds the lens ID to `lensFailures` and returns no findings, so the other lenses continue. The comment notes it |
+| Unexpected                                              | The error propagates, the BullMQ job retries with backoff, and the graph resumes from its last checkpoint                             |
 
 #### Flow spec (steps)
 
-1. Webhook receives an event. Verify the signature. Stop if the delivery ID was already seen. Stop if the action is not `opened`, `synchronize`, `reopened` or `edited` (an edit to the title, description or base branch). Enqueue `{ repo, prNumber, headSha }` and respond 200.
-2. The worker takes the job. On failure the job retries with exponential backoff.
-3. Prepare: fetch the diff, make shallow checkouts of base and head, drop skipped files, and estimate tokens.
-4. Chunk: if the estimate fits the budget, use one batch. Otherwise group files into batches under the budget, splitting a huge file by hunk. Every batch gets the same header (PR title, description, full file list).
-5. For every batch and every enabled lens, run `runReview(lens, batch)` concurrently, two or three at a time, using `Promise.allSettled`. If a lens fails, log it and note it in the comment; the other lenses continue.
-6. `runReview` does the following:
-    1. Start a conversation: system prompt is the lens prompt plus shared rules, user message is the batch header plus the diff.
-    2. Call the LLM (retry on 429/5xx with backoff).
-    3. If the response contains tool calls, run each (`search_code` or `read_file`), append the results to the conversation, and go back to step 2.
-    4. Otherwise parse the final JSON and validate it with zod. If invalid, retry once with the error message. If still invalid, return no findings.
-    5. If the step limit or token budget is reached at any point, return the valid findings so far and record the stop reason.
-7. Verify citations: for each finding, check that its quoted evidence appears at the cited file and lines. Drop findings that fail.
-8. Merge: combine all verified findings and send them to the LLM as a numbered list. It returns groups of IDs that describe the same issue (for example the same issue found by two lenses or in two batches). For each group, keep the most severe finding with its verified citation and drop the rest. The model only returns IDs and never rewrites findings. Then sort by severity.
-9. Stale check: fetch the PR's current head SHA (the ID of its latest commit). If it differs from the job's `headSha`, that means the developer pushed again while the review was going on, so discard everything and stop. The new push already queued its own review.
-10. Post: build the comment (findings grouped by severity, citations as permalinks at the reviewed commit), then create it, or edit it if one with the hidden marker already exists. Save `reviews`, `findings` and `usage` to Postgres.
+1. Webhook receives an event. Verify the signature. Stop if the delivery ID was already seen. Stop if the action is not `opened`, `synchronize`, `reopened` or `edited` (an edit to the title, description or base branch). Enqueue `{ repo, prNumber, headSha, deliveryId }` and respond 200.
+2. The BullMQ worker takes the job and invokes the compiled graph with `{ repo, prNumber, headSha }` and `thread_id = deliveryId`. Each delivery is a fresh run, and a retry of the same job reuses its thread, so the graph resumes from the last completed node.
+3. `prepare`: fetch the PR title, description and diff, make shallow checkouts of base and head, and drop skipped files.
+4. `chunk`: estimate tokens. If the estimate fits the budget, use one batch. Otherwise group files into batches under the budget, splitting a huge file by hunk. Every batch gets the same header (PR title, description, full file list). A conditional edge returns one `Send` for every batch and every enabled lens.
+5. Each lens worker is the subgraph in the diagram above:
+    1. Start a conversation: the system prompt is the lens prompt plus shared rules, and the user message is the batch header plus the diff.
+    2. `llmCall`: call the model with the tools bound.
+    3. If the response contains tool calls and the step and token limits are not reached, `toolNode` runs each (`search_code` or `read_file`), appends the results, and returns to `llmCall`. The step limit is the recursion limit, and the token budget is a counter in the worker state.
+    4. Otherwise `report` asks the model for structured output with the zod findings schema. If it is invalid, store the error and retry once. If it is still invalid, return no findings.
+    5. If a limit is reached at any point, `report` runs with what has been gathered so far, and the stop reason is recorded.
+    6. Return the findings to the shared `findings` key through the reducer. Any unrecovered error is caught and recorded in `lensFailures`.
+6. `verify`: for each finding, check that its quoted evidence appears at the cited file and lines. Drop findings that fail.
+7. `merge`: send the verified findings to the model as a numbered list, using structured output. It returns groups of IDs that describe the same issue (for example the same issue found by two lenses or in two batches). For each group, keep the most severe finding with its verified citation and drop the rest. The model only returns IDs and never rewrites findings. Then sort by severity.
+8. Stale check: fetch the PR's current head SHA (the ID of its latest commit). If it differs from the job's `headSha`, that means the developer pushed again while the review was going on, so return `Command({ goto: END })`. The new push already queued its own review. Otherwise return `Command({ goto: "post" })`.
+9. `post`: build the comment (findings grouped by severity, citations as permalinks at the reviewed commit, plus the one-line note when needed), then create it, or edit it if one with the hidden marker already exists.
+10. `save`: write `reviews`, `findings` and `usage` to Postgres. `post` and `save` are separate nodes so a failed save is retried without posting again.
+
+## References
+
+LangGraph docs:
+
+- https://docs.langchain.com/oss/javascript/langgraph/thinking-in-langgraph.md
+- https://docs.langchain.com/oss/javascript/langgraph/workflows-agents.md
+- https://docs.langchain.com/oss/javascript/langgraph/fault-tolerance.md
+- https://docs.langchain.com/oss/javascript/langgraph/application-structure.md
+- https://docs.langchain.com/oss/javascript/langgraph/test.md
+- https://docs.langchain.com/oss/javascript/langgraph/observability.md
