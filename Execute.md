@@ -13,33 +13,30 @@
 Build it as a LangGraph graph (see [Orchestration flow](./Plan.md#orchestration-flow)), starting with a single lens and adding the rest once it works.
 
 - State schema (zod) holding raw data only, with `ReducedValue` reducers for `findings` and `lensFailures`.
-- Nodes `prepare`, `chunk`, `verify`, `merge`, `post`, as plain functions that return state updates.
+- Nodes `prepare`, `chunk`, `merge`, `post`, as plain functions that return state updates.
 - Lens worker as a subgraph (the agents-with-tools pattern): `llmCall` with tools bound, `toolNode` for `search_code` and `read_file` (LangChain `tool()` with zod schemas), a conditional edge back to `llmCall`, and a `report` node that uses structured output with the findings schema. Step limit = recursion limit, token budget = a counter in the worker state. Invalid structured output is stored in state and retried once.
 - Fan-out: a conditional edge from `chunk` returns one `Send` per batch and per enabled lens. A worker that fails records its lens in `lensFailures` so the others continue.
-- Lenses (`security`, `quality` and `tests`), chunking, zod-validated findings with citation verification (see [Review Design](./Plan.md#review-design)).
-- Compile with a `MemorySaver` for now. Post a single comment with findings grouped by severity.
+- Lenses (`security`, `quality` and `tests`), chunking, zod-validated findings (see [Review Design](./Plan.md#review-design)).
 
-**Done when:** the agent reads extra files on its own and posts one comment with findings grouped by severity and verified citations.
+**Done when:** the agent reads extra files on its own and posts one comment with findings grouped by severity and permalinks to the cited lines.
 
 #### Phase 3: Reliability (Days 6-8)
 
 - Webhook handler enqueues to BullMQ and returns 200 immediately.
 - Idempotency by GitHub delivery ID, plus retries with exponential backoff.
-- Postgres tables: `reviews` (with the head SHA), `findings`, `usage` (provider, model, tokens, latency, cost).
-- Postgres checkpointer replaces `MemorySaver`, with `thread_id = deliveryId`, so a retried job resumes from the last completed node instead of repeating LLM calls.
+- Postgres tables: `reviews` (with the head SHA, unique on delivery ID so a retried job updates its row), `findings`, `usage` (provider, model, tokens, latency, cost).
 - `retryPolicy` on `prepare`, `post` and `save`. Keep `post` and `save` as separate nodes so a failed save never posts twice.
 - Stale check node: before `post`, fetch the PR's current head SHA and return `Command({ goto: END })` if it has moved.
-- Dedup: the `merge` node (LLM grouping) removes duplicate findings within a run. On `synchronize` or `edited`, review the full diff and rebuild the comment from the new findings, so findings fixed by the push disappear and nothing is duplicated.
+- Deduplication: the `merge` node (LLM grouping) removes duplicate findings within a run. On `synchronize` or `edited`, review the full diff and rebuild the comment from the new findings, so findings fixed by the push disappear and nothing is duplicated.
 - Edit the single comment in place instead of posting a new one per push.
-- Graceful shutdown: on SIGTERM and SIGINT, stop accepting webhooks (close the HTTP server), call `worker.close()` so the active job finishes, then close the Redis and Postgres connections. Set the shutdown timeout below Docker's `stop_grace_period`. A job that does not finish in time is left for BullMQ to retry and resumes from its checkpoint.
+- Graceful shutdown: on SIGTERM and SIGINT, stop accepting webhooks (close the HTTP server), call `worker.close()` so the active job finishes, then close the Redis and Postgres connections. Set the shutdown timeout below Docker's `stop_grace_period`. A job that does not finish in time is left for BullMQ to retry from the start.
 - Tests (Vitest + Testcontainers), in the LangGraph way:
-    - Whole graph: compile with a fresh `MemorySaver`, inject a fake `BaseChatModel`, and invoke with a `thread_id`. Cases: same issue from two lenses merged into one, a failed lens noted in the comment but not blocking the others, invalid structured output retried then dropped, a fabricated citation dropped, an oversized diff chunked.
-    - Single nodes: invoke `compiledGraph.nodes['verify']`, `['merge']` and `['chunk']` directly with prepared state.
-    - Partial execution: use `updateState` with `asNode` and `interruptAfter` to run only `verify` through `post` from a prepared state.
-    - Reliability: duplicate webhook delivery, comment edited (not duplicated) on repeated pushes, stale head SHA, a title, description or base edit triggers a re-review, path traversal rejected, a retried job resumes from its checkpoint, SIGTERM during an active job lets it finish.
+    - Whole graph: compile the graph, inject a fake `BaseChatModel`, and invoke it. Cases: same issue from two lenses merged into one, a failed lens noted in the comment but not blocking the others, invalid structured output retried then dropped, an oversized diff chunked.
+    - Single nodes: invoke `compiledGraph.nodes['merge']` and `['chunk']` directly with prepared state.
+    - Reliability: duplicate webhook delivery, comment edited (not duplicated) on repeated pushes, stale head SHA, a title, description or base edit triggers a re-review, path traversal rejected, a retried job re-runs without a duplicate comment or duplicate database rows, SIGTERM during an active job lets it finish.
     - Eval case where a PR leaves a README line, an old comment and a resolved TODO behind, and the `quality` lens flags them.
 
-**Done when:** a redelivered webhook and a re-pushed PR produce no duplicate comments, the bot keeps one up-to-date comment, and stopping the service mid-review does not lose or duplicate work.
+**Done when:** a redelivered webhook and a re-pushed PR produce no duplicate comments, the bot keeps one up-to-date comment, and stopping the service mid-review does not lose the review or post duplicates.
 
 #### Phase 4: Ship and prove it (Days 9-10)
 
