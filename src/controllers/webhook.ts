@@ -25,6 +25,8 @@ export function webhookController(req: Request, res: Response) {
         owner: payload.repository.owner.login,
         repo: payload.repository.name,
         prNumber: payload.pull_request.number,
+        headSha: payload.pull_request.head.sha,
+        deliveryId: req.header("x-github-delivery") ?? "",
     };
 
     reviewPullRequest(job).catch((err) => logger.error("Review failed", err));

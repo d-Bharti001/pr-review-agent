@@ -3,7 +3,7 @@ import { createChatModel } from "src/llm/chatModel";
 import app from "src/github/app";
 import { upsertReviewComment } from "src/github/comments";
 import { fetchPullRequestDiff } from "src/github/pullRequest";
-import { ReviewJob } from "src/types/review";
+import type { ReviewJob } from "src/types/review";
 
 const MAX_DIFF_CHARS = 60_000;
 
