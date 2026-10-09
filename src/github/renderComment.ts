@@ -86,7 +86,11 @@ export function renderReviewComment(args: RenderCommentArgs) {
     const sections: string[] = ["## PR Review"];
 
     if (args.findings.length === 0) {
-        sections.push("No issues found.");
+        sections.push(
+            args.failedLenses?.length
+                ? "No issues found by the lenses that completed."
+                : "No issues found.",
+        );
     }
 
     for (const severity of SEVERITY_ORDER) {

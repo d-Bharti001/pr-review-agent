@@ -1,12 +1,12 @@
 import path from "node:path";
-import { Command, END, type GraphNode } from "@langchain/langgraph";
+import type { GraphNode } from "@langchain/langgraph";
 import app from "src/github/app";
 import { checkoutCommit } from "src/github/checkout";
 import { fetchChangedFiles, fetchPullRequestInfo } from "src/github/pullRequest";
 import { ReviewState } from "src/graph/state";
 import type { ChangedFile } from "src/types/pullRequest";
-import { numberPatch } from "src/utils/diff";
-import { isSkippedFile } from "src/utils/skipRules";
+import { numberPatch } from "src/graph/utils/diff";
+import { isSkippedFile } from "src/graph/utils/skipRules";
 
 // Deleted files have no new-file line numbers, so send a summary instead of the patch
 function toPromptPatch(file: { status: string; patch?: string }): string {
@@ -59,7 +59,7 @@ export const prepare: GraphNode<typeof ReviewState> = async (state) => {
             queued: headSha,
             current: info.headSha,
         });
-        return new Command({ goto: END });
+        return { stale: true };
     }
 
     const files: ChangedFile[] = [];

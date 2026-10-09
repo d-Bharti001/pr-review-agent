@@ -5,6 +5,19 @@ import type { ChangedFile } from "src/types/pullRequest";
 
 const concat = <T>(a: T[], b: T[]) => a.concat(b);
 
+// The lens workers write these two keys back to the review state
+export const findingsChannel = () =>
+    new ReducedValue(
+        z.array(findingSchema).default(() => []),
+        { reducer: concat },
+    );
+
+export const lensFailuresChannel = () =>
+    new ReducedValue(
+        z.array(z.string()).default(() => []),
+        { reducer: concat },
+    );
+
 // State for the PR Review pipeline
 export const ReviewState = new StateSchema({
     // job input
@@ -21,14 +34,15 @@ export const ReviewState = new StateSchema({
     description: z.string().default(""),
     files: z.custom<ChangedFile[]>().default(() => []),
     skippedFiles: z.array(z.string()).default(() => []),
+    stale: z.boolean().default(false), // the PR moved on since this job was queued
 
-    // set by the lens workers (`security`, `quality`, `tests`) (reducers: concatenate)
-    findings: new ReducedValue(
-        z.array(findingSchema).default(() => []),
-        { reducer: concat },
-    ),
-    lensFailures: new ReducedValue(
-        z.array(z.string()).default(() => []),
-        { reducer: concat },
-    ),
+    // set by the `chunk` node
+    batches: z.custom<ChangedFile[][]>().default(() => []),
+
+    // set by the lens subgraphs (reducers: concatenate)
+    findings: findingsChannel(),
+    lensFailures: lensFailuresChannel(),
+
+    // set by the `merge` node
+    mergedFindings: z.array(findingSchema).default(() => []),
 });

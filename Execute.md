@@ -13,10 +13,11 @@
 Build it as a LangGraph graph (see [Orchestration flow](./Plan.md#orchestration-flow)), starting with a single lens and adding the rest once it works.
 
 - State schema (zod) holding raw data only, with `ReducedValue` reducers for `findings` and `lensFailures`.
-- Nodes `prepare`, `chunk`, `merge`, `post`, as plain functions that return state updates.
-- Lens worker as a subgraph (the agents-with-tools pattern): `llmCall` with tools bound, `toolNode` for `search_code` and `read_file` (LangChain `tool()` with zod schemas), a conditional edge back to `llmCall`, and a `report` node that uses structured output with the findings schema. Step limit = recursion limit, token budget = a counter in the worker state. Invalid structured output is stored in state and retried once.
-- Fan-out: a conditional edge from `chunk` returns one `Send` per batch and per enabled lens. A worker that fails records its lens in `lensFailures` so the others continue.
-- Lenses (`security`, `quality` and `tests`), chunking, zod-validated findings (see [Review Design](./Plan.md#review-design)).
+- Nodes `prepare`, `chunk`, `lensRouter`, `merge`, `post`, as functions that return state updates (the router returns a `Command` with `Send`s).
+- Lens agent as a graph (the agents-with-tools pattern): `initMessages`, `llmCall` with tools bound, `toolNode` for `search_code` and `read_file` (LangChain `tool()` with zod schemas, built per review around its `workDir`), a conditional edge back to `llmCall`, and a `report` node that uses structured output with the findings schema. Limits are counters in the agent state (model calls and tokens). Invalid structured output is retried once. A worker node per lens runs the agent on one batch and records a failed run in `lensFailures`.
+- Fan-out: a conditional edge from `chunk` returns one `Send` per batch to `lensRouter`, which returns one `Send` per chosen lens. A worker that fails records its lens in `lensFailures` so the others continue. Set `maxConcurrency` on `invoke` to respect provider rate limits.
+- Lenses (`security`, `quality` and `tests`), chunking with `BATCH_TOKEN_BUDGET`, and zod-validated findings with every field required (see [Review Design](./Plan.md#review-design)).
+- Lens selection (see Plan.md): rules pick the required lenses per batch, the LLM only adds optional ones, and a failed router call runs all optional lenses.
 
 **Done when:** the agent reads extra files on its own and posts one comment with findings grouped by severity and permalinks to the cited lines.
 
@@ -32,7 +33,8 @@ Build it as a LangGraph graph (see [Orchestration flow](./Plan.md#orchestration-
 - Graceful shutdown: on SIGTERM and SIGINT, stop accepting webhooks (close the HTTP server), call `worker.close()` so the active job finishes, then close the Redis and Postgres connections. Set the shutdown timeout below Docker's `stop_grace_period`. A job that does not finish in time is left for BullMQ to retry from the start.
 - Tests (Vitest + Testcontainers), in the LangGraph way:
     - Whole graph: compile the graph, inject a fake `BaseChatModel`, and invoke it. Cases: same issue from two lenses merged into one, a failed lens noted in the comment but not blocking the others, invalid structured output retried then dropped, an oversized diff chunked.
-    - Single nodes: invoke `compiledGraph.nodes['merge']` and `['chunk']` directly with prepared state.
+    - Single nodes: invoke `compiledGraph.nodes['merge']`, `['chunk']` and `['lensRouter']` directly with prepared state.
+    - Lens selection: a router failure runs all optional lenses; a PR description saying "skip security" does not remove a required lens; a docs-only batch runs `quality` only; duplicate lens ids from the router run a lens once.
     - Reliability: duplicate webhook delivery, comment edited (not duplicated) on repeated pushes, stale head SHA, a title, description or base edit triggers a re-review, path traversal rejected, a retried job re-runs without a duplicate comment or duplicate database rows, SIGTERM during an active job lets it finish.
     - Eval case where a PR leaves a README line, an old comment and a resolved TODO behind, and the `quality` lens flags them.
 

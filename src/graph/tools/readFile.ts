@@ -2,7 +2,7 @@ import path from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import { z } from "zod";
 import { tool } from "@langchain/core/tools";
-import { resolveInside } from "src/utils/paths";
+import { resolveInside } from "src/graph/utils/paths";
 
 const DEFAULT_LINES_LIMIT = 200;
 const MAX_LINES_LIMIT = 500;

@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
+import { LensId } from "src/types/lens";
 
 const ALLOWED_LLM_PROVIDERS = ["anthropic", "gemini", "ollama", "openai", "openrouter"];
+
+const ENABLED_LENSES: LensId[] = ["security", "quality", "tests"];
 
 const envSchema = z.object({
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -15,6 +18,8 @@ const envSchema = z.object({
     LLM_BASE_URL: z.url().min(1),
     LLM_API_KEY: z.string().min(1),
     LLM_MODEL: z.string().min(1),
+
+    BATCH_TOKEN_BUDGET: z.coerce.number().int().positive().default(30_000),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -41,6 +46,8 @@ const LLM_BASE_URL = env.LLM_BASE_URL;
 const LLM_API_KEY = env.LLM_API_KEY;
 const LLM_MODEL = env.LLM_MODEL;
 
+const BATCH_TOKEN_BUDGET = env.BATCH_TOKEN_BUDGET;
+
 export {
     NODE_ENV,
     DEVELOPMENT,
@@ -53,5 +60,7 @@ export {
     LLM_BASE_URL,
     LLM_API_KEY,
     LLM_MODEL,
+    BATCH_TOKEN_BUDGET,
     ALLOWED_LLM_PROVIDERS,
+    ENABLED_LENSES,
 };

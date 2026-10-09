@@ -15,7 +15,7 @@ Stack: TypeScript, Node.js, Express, BullMQ, Redis, PostgreSQL, LangGraph.js, La
 
 ## Review Design
 
-**Lenses:** One agent (a LangGraph subgraph), run once per lens and diff batch. Each lens is a config of `{ id, systemPrompt, severityRubric }`. Lenses run in parallel, then findings are merged, deduped and ranked.
+**Lenses:** One agent (a small LangGraph graph with a tool loop), run by a worker node once per lens and diff batch. Each lens is a config of `{ id, systemPrompt }`. The lenses chosen for a batch run in parallel, then findings are merged, deduped and ranked.
 
 | Lens       | Question                                         | Persona                                       | Categories it reports |
 | ---------- | ------------------------------------------------ | --------------------------------------------- | --------------------- |
@@ -25,7 +25,9 @@ Stack: TypeScript, Node.js, Express, BullMQ, Redis, PostgreSQL, LangGraph.js, La
 
 Each finding carries a category (`security`, `quality`, `tests`, or `docs`).
 
-All three are on by default; each can be switched off in config.
+All three are enabled by default (`ENABLED_LENSES` in config; a disabled lens never runs).
+
+**Lens selection:** a `lensRouter` node runs once per batch, so a small or irrelevant batch does not pay for every lens. Rules in code decide the _required_ lenses: `quality` always, plus `security` when the batch touches source or config files. The LLM may only _add_ the optional lenses (`security`, `tests`), and it is not asked at all for a docs-only batch (`quality` only). If the router call fails, all optional lenses run (it fails open). The model cannot remove a required lens, so text inside a diff cannot switch off a review.
 
 **Docs and comment consistency:** The `quality` lens decides for itself what to look for, using `search_code` and `read_file`. Its prompt tells it to check, after understanding the change: docs (README, docs/, API specs) that describe the changed behavior, comments and docstrings around the changed code, and TODO/FIXME notes the PR may have resolved. The step limit and token budget bound the extra searching.
 
@@ -92,11 +94,11 @@ Shared rules (appended to every lens prompt):
 **Large diffs:**
 
 - Skip lockfiles, generated and vendored files, then estimate tokens (`chars / 4`).
-- If the diff fits the budget (about 60% of the smallest context or per-minute token limit in use), review it in one pass.
+- If the diff fits the budget (`BATCH_TOKEN_BUDGET`, about 60% of the smallest context or per-minute token limit in use, minus the repeated PR header), review it in one pass.
 - Otherwise group whole files into batches under the budget (split a huge file by hunk), review each batch with the PR title, description and file list as a shared header, then merge, dedupe and rank the findings.
 - If files are skipped, add a one-line note to the comment.
 
-**Findings:** Schema (zod): `{ category: security|quality|tests|docs, severity: critical|high|medium|low|info, locations: [{ file, startLine, endLine }], title, message, suggestion? }`, where each location is a place that relates to the issue.
+**Findings:** Schema (zod): `{ category: security|quality|tests|docs, severity: critical|high|medium|low|info, locations: [{ file, startLine, endLine }], title, message, suggestion }`, where each location is a place that relates to the issue. Every field is required (no optional or default fields), because some providers' structured-output modes reject optional fields: an empty `locations` array or an empty `suggestion` means "none".
 
 - Locations are used as the model reports them. The numbered `read_file` output and the numbered diff are what keep the line numbers accurate.
 - One comment per PR: The bot posts a single PR comment, found by its hidden marker `<!-- pr-review-agent -->` and edited in place on every push. It lists all findings grouped under severity headings, most severe first (Critical, High, Medium, Low, Info). Empty groups are omitted. If there are no findings, the comment says no issues were found.
@@ -107,32 +109,35 @@ Shared rules (appended to every lens prompt):
 
 ## Orchestration flow
 
-The pipeline is a LangGraph `StateGraph`. Deterministic steps are ordinary nodes. The model-driven steps run as one worker per lens and diff batch, fanned out with `Send` (the orchestrator-worker pattern). Lenses never talk to each other: each worker has its own conversation, and their findings meet only at the merge node.
+The pipeline is a LangGraph `StateGraph`. Deterministic steps are ordinary nodes. A `lensRouter` node runs once per batch (a `Send` per batch) and sends that batch to each chosen lens (a `Send` per lens). Each lens is a worker node that runs the lens agent, a small LangGraph graph with a tool loop, on that one batch (the orchestrator-worker pattern). Lenses never talk to each other: each run has its own conversation, and their findings meet only at the merge node.
 
 **LangGraph features used**
 
-| Feature                                                                               | Where                                                                |
-| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `StateGraph` with a typed state schema (zod)                                          | The whole pipeline                                                   |
-| Reducers (`ReducedValue`)                                                             | Worker findings and lens failures are concatenated into shared state |
-| `Send`                                                                                | Fan-out: one worker per batch × enabled lens                         |
-| `Command` (`update` + `goto`)                                                         | The stale-check node routes to `post` or ends the run                |
-| Subgraph with `ToolNode` and conditional edges                                        | Each lens agent (the agents-with-tools pattern)                      |
-| `retryPolicy` on nodes                                                                | `prepare`, `post` and `save` (transient GitHub and database errors)  |
-| Recursion limit                                                                       | The agent's step limit                                               |
-| Node and graph testing (`graph.nodes`, invoking the compiled graph with a fake model) | Test suite                                                           |
-| LangSmith tracing                                                                     | One trace per review                                                 |
+| Feature                                                                               | Where                                                                                                      |
+| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `StateGraph` with a typed state schema (zod)                                          | The whole pipeline, and a separate state for the lens agent                                                |
+| Reducers (`ReducedValue`)                                                             | Worker findings and lens failures are concatenated into shared state; call and token counters in the agent |
+| Conditional edges                                                                     | `prepare` (stale exit), `chunk` (fan-out), the agent loop (tools, report or stop)                          |
+| `Send`                                                                                | Fan-out: one `lensRouter` run per batch, then one lens worker per chosen lens                              |
+| `Command` (`goto` with `Send`s)                                                       | The `lensRouter` sends the batch to the chosen lenses                                                      |
+| Compiled graph invoked from a node                                                    | Each lens worker runs the lens agent (agents-with-tools pattern: `llmCall`, `ToolNode`, conditional edge)  |
+| `retryPolicy` on nodes                                                                | `prepare`, `post` and `save` (transient GitHub and database errors)                                        |
+| Recursion limit                                                                       | A backstop only; the agent's real limits are LLM-call and token counters in its state                      |
+| `maxConcurrency`                                                                      | Caps parallel lens runs (provider rate limits)                                                             |
+| Node and graph testing (`graph.nodes`, invoking the compiled graph with a fake model) | Test suite                                                                                                 |
+| LangSmith tracing                                                                     | One trace per review                                                                                       |
 
 **State:** State holds raw data only. Prompts and the comment text are formatted inside nodes.
 
-| Key                                             | Contents                                             | Updated by   |
-| ----------------------------------------------- | ---------------------------------------------------- | ------------ |
-| `repo`, `prNumber`, `headSha`, `deliveryId`     | Job input                                            | Input        |
-| `title`, `description`, `files`, `skippedFiles` | The PR as fetched, after skip rules                  | `prepare`    |
-| `batches`                                       | File groups under the token budget                   | `chunk`      |
-| `findings`                                      | Raw findings from all workers (reducer: concatenate) | Lens workers |
-| `lensFailures`                                  | IDs of lenses that failed (reducer: concatenate)     | Lens workers |
-| `mergedFindings`                                | Findings with duplicates removed, sorted by severity | `merge`      |
+| Key                                                                    | Contents                                                                                                                                 | Updated by   |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| `installationId`, `owner`, `repo`, `prNumber`, `headSha`, `deliveryId` | Job input                                                                                                                                | Input        |
+| `workDir`                                                              | Temporary folder with the base and head checkouts. Created by the service, deleted when the run ends; sent to workers in `Send` payloads | Input        |
+| `title`, `description`, `files`, `skippedFiles`, `stale`               | The PR as fetched, after skip rules. `stale` is set when the PR moved on since the job was queued                                        | `prepare`    |
+| `batches`                                                              | File groups under the token budget                                                                                                       | `chunk`      |
+| `findings`                                                             | Raw findings from all workers (reducer: concatenate)                                                                                     | Lens workers |
+| `lensFailures`                                                         | IDs of lenses that failed (reducer: concatenate)                                                                                         | Lens workers |
+| `mergedFindings`                                                       | Findings with duplicates removed, sorted by severity                                                                                     | `merge`      |
 
 #### Pipeline
 
@@ -141,10 +146,13 @@ flowchart TD
     A["GitHub PR event: opened, synchronize, reopened, edited"] --> B["Express /webhook<br/>verify signature, dedupe delivery ID, enqueue, return 200"]
     B --> C["BullMQ queue<br/>job: repo, PR number, headSha, delivery ID"]
     C --> D["prepare<br/>diff, base and head checkout, skip rules, PR title and description"]
+    D -- "head SHA moved: stale" --> X["END: discard result"]
     D --> E["chunk<br/>token estimate, fits budget: one batch, otherwise several"]
-    E -- "Send: one worker per batch x lens" --> G1["security worker"]
-    E -- "Send" --> G2["quality worker"]
-    E -- "Send" --> G3["tests worker"]
+    E -- "Send: one per batch" --> R["lensRouter<br/>rules pick required lenses, LLM adds optional ones"]
+    E -- "no files left to review" --> H
+    R -- "Send: one per chosen lens" --> G1["security worker"]
+    R -- "Send" --> G2["quality worker"]
+    R -- "Send" --> G3["tests worker"]
     G1 -- "findings reducer" --> H["merge<br/>LLM groups duplicates, sort by severity"]
     G2 -- "findings reducer" --> H
     G3 -- "findings reducer" --> H
@@ -155,17 +163,20 @@ flowchart TD
     L --> M["END"]
 ```
 
-#### Lens worker (subgraph, one per lens and batch)
+#### Lens agent (run by a lens worker, one run per lens and batch)
 
 ```mermaid
 flowchart TD
-    S["Input: lens prompt + shared rules, PR header, diff batch"] --> L["llmCall<br/>model with tools bound"]
-    L --> T{"tool calls, and under the step and token limits?"}
+    S["Input: lens prompt + shared rules, PR header, diff batch"] --> I["initMessages<br/>system and user messages"]
+    I --> L["llmCall<br/>model with tools bound"]
+    L --> F{"model call failed?"}
+    F -- yes --> Z["END: the worker records the lens as failed"]
+    F -- no --> T{"tool calls, and under the step and token limits?"}
     T -- yes --> R["toolNode<br/>search_code, read_file"]
     R --> L
     T -- no --> O["report<br/>structured output with the zod findings schema"]
     O --> V{"valid?"}
-    V -- "no, first time: error stored in state" --> O
+    V -- "no, first time: error added to the conversation" --> O
     V -- "no, second time" --> X["return no findings"]
     V -- yes --> D["return findings"]
 ```
@@ -178,25 +189,28 @@ flowchart TD
 | Transient LLM errors (429/5xx)                          | The chat model's built-in retry with backoff                                                                                          |
 | LLM-recoverable (tool error, invalid structured output) | The error goes back into state or the tool result and the model tries again, once for structured output                               |
 | A lens fails after its retries                          | The worker catches it, adds the lens ID to `lensFailures` and returns no findings, so the other lenses continue. The comment notes it |
+| The `lensRouter` model call fails                       | Fail open: all optional lenses run for that batch                                                                                     |
+| The `merge` model call fails                            | Keep all findings (no deduplication) and sort them                                                                                    |
 | Unexpected                                              | The error propagates and the BullMQ job retries with backoff. The retry runs the whole graph again.                                   |
 
 #### Flow spec (steps)
 
 1. Webhook receives an event. Verify the signature. Stop if the delivery ID was already seen. Stop if the action is not `opened`, `synchronize`, `reopened` or `edited` (an edit to the title, description or base branch). Enqueue `{ repo, prNumber, headSha, deliveryId }` and respond 200.
 2. The BullMQ worker takes the job and invokes the compiled graph with `{ repo, prNumber, headSha, deliveryId }`.
-3. `prepare`: fetch the PR title, description and diff, make shallow checkouts of base and head, and drop skipped files.
-4. `chunk`: estimate tokens. If the estimate fits the budget, use one batch. Otherwise group files into batches under the budget, splitting a huge file by hunk. Every batch gets the same header (PR title, description, full file list). A conditional edge returns one `Send` for every batch and every enabled lens.
-5. Each lens worker is the subgraph in the diagram above:
-    1. Start a conversation: the system prompt is the lens prompt plus shared rules, and the user message is the batch header plus the diff.
-    2. `llmCall`: call the model with the tools bound.
-    3. If the response contains tool calls and the step and token limits are not reached, `toolNode` runs each (`search_code` or `read_file`), appends the results, and returns to `llmCall`. The step limit is the recursion limit, and the token budget is a counter in the worker state.
-    4. Otherwise `report` asks the model for structured output with the zod findings schema. If it is invalid, store the error and retry once. If it is still invalid, return no findings.
-    5. If a limit is reached at any point, `report` runs with what has been gathered so far, and the stop reason is recorded.
-    6. Return the findings to the shared `findings` key through the reducer. Any unrecovered error is caught and recorded in `lensFailures`.
-6. `merge`: send the findings to the model as a numbered list, using structured output. It returns groups of IDs that describe the same issue (for example the same issue found by two lenses or in two batches). For each group, keep the most severe finding and drop the rest. The model only returns IDs and never rewrites findings. Then sort by severity.
-7. Stale check: fetch the PR's current head SHA (the ID of its latest commit). If it differs from the job's `headSha`, that means the developer pushed again while the review was going on, so return `Command({ goto: END })`. The new push already queued its own review. Otherwise return `Command({ goto: "post" })`.
-8. `post`: build the comment (findings grouped by severity, citations as permalinks at the reviewed commit, plus the one-line note when needed), then create it, or edit it if one with the hidden marker already exists.
-9. `save`: write `reviews`, `findings` and `usage` to Postgres, using an upsert keyed by delivery ID so a retried job does not create duplicate rows. `post` and `save` are separate nodes so a failed save is retried without posting again.
+3. `prepare`: fetch the PR title, description and diff, make shallow checkouts of base and head, and drop skipped files. If the PR's head SHA is no longer the job's `headSha`, set `stale` and end the run (the newer push has already queued its own review).
+4. `chunk`: estimate tokens. If the estimate fits the budget, use one batch. Otherwise group files into batches under the budget, splitting a huge file by hunk. Every batch gets the same header (PR title, description, full file list). A conditional edge returns one `Send` to `lensRouter` for every batch, or goes straight to `merge` when no files are left to review.
+5. `lensRouter` (once per batch): the rules pick the required lenses, the LLM may add optional ones (see Lens selection), and the node returns a `Command` whose `goto` is one `Send` per chosen lens with that batch.
+6. Each lens worker runs the lens agent, the graph in the diagram above, on its batch:
+    1. `initMessages`: the system prompt is the lens prompt plus shared rules, and the user message is the batch header plus the diff.
+    2. `llmCall`: call the model with the tools bound. If the call fails, the run ends and the worker records the lens in `lensFailures`.
+    3. If the response contains tool calls and the step and token limits are not reached, `toolNode` runs each (`search_code` or `read_file`), appends the results, and returns to `llmCall`. The limits are counters in the agent state: the number of model calls and the total tokens used.
+    4. Otherwise `report` asks the model for structured output with the zod findings schema. If it is invalid, add the error to the conversation and retry once. If it is still invalid, return no findings.
+    5. If a limit is reached at any point, `report` runs with what has been gathered so far, and the stop reason is logged.
+    6. The worker returns the findings to the shared `findings` key through the reducer. Any unrecovered error is caught and recorded in `lensFailures`.
+7. `merge`: send the findings to the model as a numbered list, using structured output. It returns groups of IDs that describe the same issue (for example the same issue found by two lenses or in two batches). For each group, keep the most severe finding and drop the rest. The model only returns IDs and never rewrites findings. Then sort by severity.
+8. Stale check: fetch the PR's current head SHA (the ID of its latest commit). If it differs from the job's `headSha`, that means the developer pushed again while the review was going on, so return `Command({ goto: END })`. The new push already queued its own review. Otherwise return `Command({ goto: "post" })`.
+9. `post`: build the comment (findings grouped by severity, citations as permalinks at the reviewed commit, plus the one-line note when needed), then create it, or edit it if one with the hidden marker already exists.
+10. `save`: write `reviews`, `findings` and `usage` to Postgres, using an upsert keyed by delivery ID so a retried job does not create duplicate rows. `post` and `save` are separate nodes so a failed save is retried without posting again.
 
 ## References
 
