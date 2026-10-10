@@ -9,11 +9,15 @@ import { qualityLens, securityLens, testsLens } from "src/graph/prompts/lenses";
 import { createLensWorker } from "src/graph/nodes/lens/worker";
 import { createMergeNode } from "src/graph/nodes/merge";
 import { post } from "src/graph/nodes/post";
+import { save } from "src/graph/nodes/save";
+import { staleCheck } from "src/graph/nodes/staleCheck";
+
+const retry = { retryPolicy: { maxAttempts: 3 } };
 
 export function buildGraph(chatModel: ChatModel) {
     return (
         new StateGraph(ReviewState)
-            .addNode("prepare", prepare)
+            .addNode("prepare", prepare, retry)
             .addNode("chunk", chunk)
             .addNode("lensRouter", createLensRouterNode(chatModel), {
                 ends: ["security", "quality", "tests"],
@@ -22,7 +26,9 @@ export function buildGraph(chatModel: ChatModel) {
             .addNode("quality", createLensWorker(qualityLens, chatModel))
             .addNode("tests", createLensWorker(testsLens, chatModel))
             .addNode("merge", createMergeNode(chatModel))
-            .addNode("post", post)
+            .addNode("staleCheck", staleCheck, retry)
+            .addNode("post", post, retry)
+            .addNode("save", save, retry)
             .addEdge(START, "prepare")
             .addConditionalEdges("prepare", (state) => (state.stale ? END : "chunk"), [
                 "chunk",
@@ -49,8 +55,13 @@ export function buildGraph(chatModel: ChatModel) {
             .addEdge("security", "merge")
             .addEdge("quality", "merge")
             .addEdge("tests", "merge")
-            .addEdge("merge", "post")
-            .addEdge("post", END)
+            .addEdge("merge", "staleCheck")
+            .addConditionalEdges("staleCheck", (state) => (state.stale ? END : "post"), [
+                "post",
+                END,
+            ])
+            .addEdge("post", "save")
+            .addEdge("save", END)
             .compile()
     );
 }

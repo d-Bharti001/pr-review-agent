@@ -1,11 +1,12 @@
 import { ReducedValue, StateSchema } from "@langchain/langgraph";
 import { z } from "zod";
 import { findingSchema } from "src/types/findings";
+import { usageRecordSchema } from "src/types/usage";
 import type { ChangedFile } from "src/types/pullRequest";
 
 const concat = <T>(a: T[], b: T[]) => a.concat(b);
 
-// The lens workers write these two keys back to the review state
+// The lens workers write these keys back to the review state
 export const findingsChannel = () =>
     new ReducedValue(
         z.array(findingSchema).default(() => []),
@@ -15,6 +16,12 @@ export const findingsChannel = () =>
 export const lensFailuresChannel = () =>
     new ReducedValue(
         z.array(z.string()).default(() => []),
+        { reducer: concat },
+    );
+
+export const usageChannel = () =>
+    new ReducedValue(
+        z.array(usageRecordSchema).default(() => []),
         { reducer: concat },
     );
 
@@ -45,4 +52,6 @@ export const ReviewState = new StateSchema({
 
     // set by the `merge` node
     mergedFindings: z.array(findingSchema).default(() => []),
+
+    usage: usageChannel(),
 });

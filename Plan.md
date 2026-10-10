@@ -2,7 +2,7 @@
 
 **Goal:** a live GitHub App that reviews pull requests with LLM agents, with reliable webhook handling (idempotency, retries, dedup).
 
-Stack: TypeScript, Node.js, Express, BullMQ, Redis, PostgreSQL, LangGraph.js, LangChain.js, LangSmith, Octokit, zod, Vitest + Testcontainers, Docker Compose, Nginx, GitHub Actions.
+Stack: TypeScript, Node.js, Express, BullMQ, Redis, MySQL, LangGraph.js, LangChain.js, LangSmith, Octokit, zod, Vitest + Testcontainers, Docker Compose, Nginx, GitHub Actions.
 
 ## LLM Provider
 
@@ -159,7 +159,7 @@ flowchart TD
     H --> I{"stale check<br/>head SHA unchanged? (is the PR still at the commit we reviewed?)"}
     I -- "no: Command goto END" --> J["END: discard result"]
     I -- "yes: Command goto post" --> K["post<br/>create or edit the single comment"]
-    K --> L["save<br/>reviews, findings, usage to Postgres"]
+    K --> L["save<br/>reviews, findings, usage to MySQL"]
     L --> M["END"]
 ```
 
@@ -210,7 +210,7 @@ flowchart TD
 7. `merge`: send the findings to the model as a numbered list, using structured output. It returns groups of IDs that describe the same issue (for example the same issue found by two lenses or in two batches). For each group, keep the most severe finding and drop the rest. The model only returns IDs and never rewrites findings. Then sort by severity.
 8. Stale check: fetch the PR's current head SHA (the ID of its latest commit). If it differs from the job's `headSha`, that means the developer pushed again while the review was going on, so return `Command({ goto: END })`. The new push already queued its own review. Otherwise return `Command({ goto: "post" })`.
 9. `post`: build the comment (findings grouped by severity, citations as permalinks at the reviewed commit, plus the one-line note when needed), then create it, or edit it if one with the hidden marker already exists.
-10. `save`: write `reviews`, `findings` and `usage` to Postgres, using an upsert keyed by delivery ID so a retried job does not create duplicate rows. `post` and `save` are separate nodes so a failed save is retried without posting again.
+10. `save`: write `reviews`, `findings` and `usage` to MySQL, using an upsert keyed by delivery ID so a retried job does not create duplicate rows. `post` and `save` are separate nodes so a failed save is retried without posting again.
 
 ## References
 

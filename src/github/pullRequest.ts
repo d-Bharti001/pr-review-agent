@@ -15,6 +15,30 @@ export async function fetchPullRequestDiff(
     return data as unknown as string;
 }
 
+/**
+ * Returns the commit the PR branched from (the merge base). GitHub computes the PR's diff
+ * against it, while `base.sha` is the tip of the base branch, which may be newer.
+ */
+async function findMergeBase(
+    octokit: Octokit,
+    args: PullRequestRef,
+    baseTipSha: string,
+    headSha: string,
+): Promise<string> {
+    try {
+        const { data } = await octokit.rest.repos.compareCommitsWithBasehead({
+            owner: args.owner,
+            repo: args.repo,
+            basehead: `${baseTipSha}...${headSha}`,
+        });
+
+        return data.merge_base_commit.sha;
+    } catch (err) {
+        logger.warn("Could not find the merge base, using the tip of the base branch", err);
+        return baseTipSha;
+    }
+}
+
 export async function fetchPullRequestInfo(
     octokit: Octokit,
     args: PullRequestRef,
@@ -28,9 +52,23 @@ export async function fetchPullRequestInfo(
     return {
         title: data.title,
         description: data.body ?? "",
-        baseSha: data.base.sha,
+        baseSha: await findMergeBase(octokit, args, data.base.sha, data.head.sha),
         headSha: data.head.sha,
     };
+}
+
+/** Only the current head SHA of the PR (one cheap call, used by the stale check). */
+export async function fetchPullRequestHeadSha(
+    octokit: Octokit,
+    args: PullRequestRef,
+): Promise<string> {
+    const { data } = await octokit.rest.pulls.get({
+        owner: args.owner,
+        repo: args.repo,
+        pull_number: args.prNumber,
+    });
+
+    return data.head.sha;
 }
 
 export async function fetchChangedFiles(octokit: Octokit, args: PullRequestRef) {

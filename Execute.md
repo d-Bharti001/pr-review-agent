@@ -25,12 +25,12 @@ Build it as a LangGraph graph (see [Orchestration flow](./Plan.md#orchestration-
 
 - Webhook handler enqueues to BullMQ and returns 200 immediately.
 - Idempotency by GitHub delivery ID, plus retries with exponential backoff.
-- Postgres tables: `reviews` (with the head SHA, unique on delivery ID so a retried job updates its row), `findings`, `usage` (provider, model, tokens, latency, cost).
+- MySQL tables: `reviews` (with the head SHA, unique on delivery ID so a retried job updates its row), `findings`, `usage` (provider, model, tokens, latency, cost).
 - `retryPolicy` on `prepare`, `post` and `save`. Keep `post` and `save` as separate nodes so a failed save never posts twice.
 - Stale check node: before `post`, fetch the PR's current head SHA and return `Command({ goto: END })` if it has moved.
 - Deduplication: the `merge` node (LLM grouping) removes duplicate findings within a run. On `synchronize` or `edited`, review the full diff and rebuild the comment from the new findings, so findings fixed by the push disappear and nothing is duplicated.
 - Edit the single comment in place instead of posting a new one per push.
-- Graceful shutdown: on SIGTERM and SIGINT, stop accepting webhooks (close the HTTP server), call `worker.close()` so the active job finishes, then close the Redis and Postgres connections. Set the shutdown timeout below Docker's `stop_grace_period`. A job that does not finish in time is left for BullMQ to retry from the start.
+- Graceful shutdown: on SIGTERM and SIGINT, stop accepting webhooks (close the HTTP server), call `worker.close()` so the active job finishes, then close the Redis and MySQL connections. Set the shutdown timeout below Docker's `stop_grace_period`. A job that does not finish in time is left for BullMQ to retry from the start.
 - Tests (Vitest + Testcontainers), in the LangGraph way:
     - Whole graph: compile the graph, inject a fake `BaseChatModel`, and invoke it. Cases: same issue from two lenses merged into one, a failed lens noted in the comment but not blocking the others, invalid structured output retried then dropped, an oversized diff chunked.
     - Single nodes: invoke `compiledGraph.nodes['merge']`, `['chunk']` and `['lensRouter']` directly with prepared state.
@@ -42,7 +42,7 @@ Build it as a LangGraph graph (see [Orchestration flow](./Plan.md#orchestration-
 
 #### Phase 4: Ship and prove it (Days 9-10)
 
-- Dockerfile and Docker Compose (app, worker, Redis, Postgres), with `stop_grace_period` set.
+- Dockerfile and Docker Compose (app, worker, Redis, MySQL), with `stop_grace_period` set.
 - Deploy to a DigitalOcean droplet behind Nginx and Cloudflare, with HTTPS.
 - GitHub Actions: test, build and deploy on merge to main.
 - LangSmith observability: enable tracing through environment variables (`LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`). Each review is one trace showing every node, model call and tool call. Tag traces with the repo, PR number, head SHA and delivery ID. Tracing is off when no key is set, including in tests.

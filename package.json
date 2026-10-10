@@ -6,6 +6,9 @@
     "type": "module",
     "scripts": {
         "dev": "tsx watch --env-file=.env src/index.ts",
+        "migrate:create": "node --env-file=.env node_modules/.bin/db-migrate create",
+        "migrate:up": "node --env-file=.env node_modules/.bin/db-migrate up",
+        "migrate:down": "node --env-file=.env node_modules/.bin/db-migrate down",
         "test": "echo \"Error: no test specified\" && exit 1"
     },
     "author": "",
@@ -22,7 +25,10 @@
         "@langchain/core": "^1.2.17",
         "@langchain/langgraph": "^1.4.20",
         "@langchain/openai": "^1.6.2",
+        "db-migrate": "^1.8.0",
+        "db-migrate-mysql": "^3.2.1",
         "express": "^5.2.1",
+        "mysql2": "^3.24.5",
         "octokit": "^5.0.5",
         "zod": "^4.6.5"
     }

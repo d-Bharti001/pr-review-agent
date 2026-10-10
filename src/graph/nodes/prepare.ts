@@ -1,3 +1,4 @@
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import type { GraphNode } from "@langchain/langgraph";
 import app from "src/github/app";
@@ -37,11 +38,17 @@ function toPromptPatch(file: { status: string; patch?: string }): string {
  * 5. Convert each remaining patch to the form the model sees: added and context
  *    lines get their line number in the head version of the file, and a deleted
  *    file becomes a one-line summary.
- * 6. Shallow-check-out the base and head commits into `workDir/base` and
+ * 6. Remove anything left in `workDir` by an earlier attempt (the node can be retried),
+ *    then shallow-check-out the base and head commits into `workDir/base` and
  *    `workDir/head`, which the `search_code` and `read_file` tools read from.
  */
 export const prepare: GraphNode<typeof ReviewState> = async (state) => {
     const { installationId, owner, repo, prNumber, headSha, workDir } = state;
+
+    // This node can be retried, so start from an empty directory: a failed earlier attempt
+    // may have left partial checkouts behind (and `git remote add` fails if they exist).
+    await rm(workDir, { recursive: true, force: true });
+
     const octokit = await app.getInstallationOctokit(installationId);
     const ref = { owner, repo, prNumber };
 

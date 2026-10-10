@@ -1,0 +1,34 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: pr_review_agent_database
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: pr_review
+      MYSQL_USER: pr_review_user
+      MYSQL_PASSWORD: pr_review_password
+    ports:
+      - "127.0.0.1:8082:3306"
+    volumes: [mysql-data:/var/lib/mysql]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7
+    container_name: pr_review_agent_redis
+    command: ["redis-server", "--appendonly", "yes"] # Append-only file: queued and active jobs survive a Redis restart
+    ports:
+      - "127.0.0.1:8083:6379"
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  mysql-data:
+  redis-data:

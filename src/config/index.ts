@@ -10,6 +10,12 @@ const envSchema = z.object({
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
     PORT: z.coerce.number().default(8081),
 
+    MYSQL_HOST: z.string().min(1),
+    MYSQL_PORT: z.coerce.number().int().min(1).max(65535),
+    MYSQL_DATABASE: z.string().min(1),
+    MYSQL_USER: z.string().min(1),
+    MYSQL_PASSWORD: z.string().min(1),
+
     GITHUB_APP_ID: z.string().min(1),
     GITHUB_PRIVATE_KEY_PATH: z.string().min(1),
     GITHUB_WEBHOOK_SECRET: z.string().min(1),
@@ -37,6 +43,8 @@ const TEST = NODE_ENV === "test";
 
 const PORT = env.PORT;
 
+const DATABASE_URL = `mysql://${env.MYSQL_USER}:${env.MYSQL_PASSWORD}@${env.MYSQL_HOST}:${env.MYSQL_PORT}/${env.MYSQL_DATABASE}`;
+
 const GITHUB_APP_ID = env.GITHUB_APP_ID;
 const GITHUB_PRIVATE_KEY = readFileSync(env.GITHUB_PRIVATE_KEY_PATH, "utf-8");
 const GITHUB_WEBHOOK_SECRET = env.GITHUB_WEBHOOK_SECRET;
@@ -53,6 +61,7 @@ export {
     DEVELOPMENT,
     TEST,
     PORT,
+    DATABASE_URL,
     GITHUB_APP_ID,
     GITHUB_PRIVATE_KEY,
     GITHUB_WEBHOOK_SECRET,

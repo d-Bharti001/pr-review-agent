@@ -4,8 +4,9 @@ import { z } from "zod";
 import type { ChatModel } from "src/llm/chatModel";
 import type { Lens } from "src/types/lens";
 import type { ChangedFile } from "src/types/pullRequest";
+import type { UsageRecord } from "src/types/usage";
 import { createLensAgent } from "src/graph/nodes/lens/agent";
-import { findingsChannel, lensFailuresChannel } from "src/graph/state";
+import { findingsChannel, lensFailuresChannel, usageChannel } from "src/graph/state";
 import { createTools } from "src/graph/tools";
 
 // What `Send` hands to a worker, plus the two keys it writes back to `ReviewState`
@@ -20,6 +21,7 @@ export const LensWorkerState = new StateSchema({
     // output (merged into ReviewState by its reducers)
     findings: findingsChannel(),
     lensFailures: lensFailuresChannel(),
+    usage: usageChannel(),
 });
 
 /**
@@ -31,6 +33,7 @@ export function createLensWorker(
 ): GraphNode<typeof LensWorkerState> {
     return async (input, config) => {
         const { batch, prTitle, prDescription, changedPaths, workDir } = input;
+        const startAt = Date.now();
 
         try {
             // Tools are bound to this review's workDir, so the agent is built per run
@@ -40,7 +43,20 @@ export function createLensWorker(
                 config,
             );
 
-            return result.failed ? { lensFailures: [lens.id] } : { findings: result.findings };
+            const usage: UsageRecord[] = [
+                {
+                    pipelineStep: lens.id,
+                    model: chatModel.name,
+                    provider: chatModel.provider,
+                    llmCalls: result.llmCalls,
+                    totalTokens: result.tokensUsed,
+                    latencyMs: Date.now() - startAt,
+                },
+            ];
+
+            return result.failed
+                ? { lensFailures: [lens.id], usage }
+                : { findings: result.findings, usage };
         } catch (err) {
             logger.error(`Lens ${lens.id} failed`, err);
             return { lensFailures: [lens.id] };
