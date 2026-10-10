@@ -1,7 +1,7 @@
-import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { type GraphNode, StateSchema } from "@langchain/langgraph";
 import { z } from "zod";
 
+import type { ChatModel } from "src/llm/chatModel";
 import type { Lens } from "src/types/lens";
 import type { ChangedFile } from "src/types/pullRequest";
 import { createLensAgent } from "src/graph/nodes/lens/agent";
@@ -27,14 +27,14 @@ export const LensWorkerState = new StateSchema({
  */
 export function createLensWorker(
     lens: Lens,
-    model: BaseChatModel,
+    chatModel: ChatModel,
 ): GraphNode<typeof LensWorkerState> {
     return async (input, config) => {
         const { batch, prTitle, prDescription, changedPaths, workDir } = input;
 
         try {
             // Tools are bound to this review's workDir, so the agent is built per run
-            const agent = createLensAgent(lens, model, createTools(workDir));
+            const agent = createLensAgent(lens, chatModel, createTools(workDir));
             const result = await agent.invoke(
                 { batch, prTitle, prDescription, changedPaths },
                 config,

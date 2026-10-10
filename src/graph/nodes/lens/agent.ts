@@ -1,4 +1,3 @@
-import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { type BaseMessage, HumanMessage, SystemMessage, AIMessage } from "@langchain/core/messages";
 import { OutputParserException } from "@langchain/core/output_parsers";
@@ -14,6 +13,7 @@ import {
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { z } from "zod";
 
+import type { ChatModel } from "src/llm/chatModel";
 import type { Lens } from "src/types/lens";
 import type { ChangedFile } from "src/types/pullRequest";
 import { buildBatchMessage } from "src/graph/prompts/batch";
@@ -56,13 +56,13 @@ function hasPendingToolCalls(messages: BaseMessage[]): boolean {
  */
 export function createLensAgent(
     lens: Lens,
-    model: BaseChatModel,
+    chatModel: ChatModel,
     tools: StructuredToolInterface[],
     limits: AgentLimits = DEFAULT_LIMITS,
 ) {
-    if (!model.bindTools) throw new Error("The chat model does not support tool calling");
-    const modelWithTools = model.bindTools(tools);
-    const structuredModel = model.withStructuredOutput(findingsResultSchema);
+    if (!chatModel.model.bindTools) throw new Error("The chat model does not support tool calling");
+    const modelWithTools = chatModel.model.bindTools(tools);
+    const structuredModel = chatModel.model.withStructuredOutput(findingsResultSchema);
 
     // Builds the first messages of the conversation from the input
     const initMessages: GraphNode<typeof AgentState> = (state) => ({

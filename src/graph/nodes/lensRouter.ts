@@ -1,8 +1,8 @@
-import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { Command, type GraphNode, Send, StateSchema } from "@langchain/langgraph";
 import { z } from "zod";
 import { ENABLED_LENSES } from "src/config";
+import type { ChatModel } from "src/llm/chatModel";
 import type { LensId } from "src/types/lens";
 import type { ChangedFile } from "src/types/pullRequest";
 import { OPTIONAL_LENSES, isDocsOnly, requiredLenses } from "src/graph/utils/selectLenses";
@@ -28,7 +28,7 @@ function buildRouterInput(state: typeof RouterState.State): string {
 }
 
 async function askRouter(
-    model: BaseChatModel,
+    chatModel: ChatModel,
     state: typeof RouterState.State,
     candidates: LensId[],
 ): Promise<LensId[]> {
@@ -37,7 +37,7 @@ async function askRouter(
         reason: z.string().describe("One short sentence"),
     });
 
-    const result = await model
+    const result = await chatModel.model
         .withStructuredOutput(schema)
         .invoke([
             new SystemMessage(`${ROUTER_PROMPT}\nCandidate lenses: ${candidates.join(", ")}`),
@@ -53,7 +53,7 @@ async function askRouter(
  * The rules decide the required lenses; the LLM only adds optional ones.
  * Then it sends the batch to each chosen lens.
  */
-export function createLensRouterNode(model: BaseChatModel): GraphNode<typeof RouterState> {
+export function createLensRouterNode(chatModel: ChatModel): GraphNode<typeof RouterState> {
     return async (state) => {
         const required = requiredLenses(state.batch);
         const candidates = OPTIONAL_LENSES.filter((id) => !required.includes(id));
@@ -61,7 +61,7 @@ export function createLensRouterNode(model: BaseChatModel): GraphNode<typeof Rou
         let chosen: LensId[] = [];
         if (candidates.length > 0 && !isDocsOnly(state.batch)) {
             try {
-                chosen = await askRouter(model, state, candidates);
+                chosen = await askRouter(chatModel, state, candidates);
             } catch (err) {
                 logger.warn("Router failed, running all candidate lenses", err);
                 chosen = candidates; // fail open: costs more, never skips a review

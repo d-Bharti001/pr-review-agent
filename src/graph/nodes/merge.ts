@@ -1,8 +1,8 @@
-import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { GraphNode } from "@langchain/langgraph";
 import { z } from "zod";
 
+import type { ChatModel } from "src/llm/chatModel";
 import type { ReviewState } from "src/graph/state";
 import { type Finding, SEVERITY_ORDER } from "src/types/findings";
 import { MERGE_PROMPT } from "src/graph/prompts/merge";
@@ -27,14 +27,14 @@ function describe(f: Finding, index: number): string {
  * Reads: findings.
  * Writes: mergedFindings.
  */
-export function createMergeNode(model: BaseChatModel): GraphNode<typeof ReviewState> {
+export function createMergeNode(chatModel: ChatModel): GraphNode<typeof ReviewState> {
     return async (state) => {
         const findings = state.findings;
         let kept = findings;
 
         if (findings.length > 1) {
             try {
-                const { groups } = await model
+                const { groups } = await chatModel.model
                     .withStructuredOutput(mergeSchema)
                     .invoke([
                         new SystemMessage(MERGE_PROMPT),

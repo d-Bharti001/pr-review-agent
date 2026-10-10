@@ -1,6 +1,6 @@
-import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { START, END, Send, StateGraph } from "@langchain/langgraph";
 
+import type { ChatModel } from "src/llm/chatModel";
 import { ReviewState } from "src/graph/state";
 import { prepare } from "src/graph/nodes/prepare";
 import { chunk } from "src/graph/nodes/chunk";
@@ -10,18 +10,18 @@ import { createLensWorker } from "src/graph/nodes/lens/worker";
 import { createMergeNode } from "src/graph/nodes/merge";
 import { post } from "src/graph/nodes/post";
 
-export function buildGraph(model: BaseChatModel) {
+export function buildGraph(chatModel: ChatModel) {
     return (
         new StateGraph(ReviewState)
             .addNode("prepare", prepare)
             .addNode("chunk", chunk)
-            .addNode("lensRouter", createLensRouterNode(model), {
+            .addNode("lensRouter", createLensRouterNode(chatModel), {
                 ends: ["security", "quality", "tests"],
             })
-            .addNode("security", createLensWorker(securityLens, model))
-            .addNode("quality", createLensWorker(qualityLens, model))
-            .addNode("tests", createLensWorker(testsLens, model))
-            .addNode("merge", createMergeNode(model))
+            .addNode("security", createLensWorker(securityLens, chatModel))
+            .addNode("quality", createLensWorker(qualityLens, chatModel))
+            .addNode("tests", createLensWorker(testsLens, chatModel))
+            .addNode("merge", createMergeNode(chatModel))
             .addNode("post", post)
             .addEdge(START, "prepare")
             .addConditionalEdges("prepare", (state) => (state.stale ? END : "chunk"), [
