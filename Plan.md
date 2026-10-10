@@ -2,16 +2,16 @@
 
 **Goal:** a live GitHub App that reviews pull requests with LLM agents, with reliable webhook handling (idempotency, retries, dedup).
 
-Stack: TypeScript, Node.js, Express, BullMQ, Redis, MySQL, LangGraph.js, LangChain.js, LangSmith, Octokit, zod, Vitest + Testcontainers, Docker Compose, Nginx, GitHub Actions.
+Stack: TypeScript, Node.js, Express, BullMQ, Redis, MySQL, db-migrate, LangGraph.js, LangChain.js, LangSmith, Octokit, zod, Vitest + Testcontainers, Docker Compose, Nginx, GitHub Actions.
 
 ## LLM Provider
 
-- **One interface:** all application code depends on LangChain's `BaseChatModel` and never on a provider class. A single factory, `createChatModel()`, reads the environment and is the only place that names a provider.
-- **Configuration:** `LLM_PROVIDER`, `LLM_MODEL` and `LLM_API_KEY`, plus `LLM_BASE_URL` for `openai-compatible`.
-    - `openai-compatible` (default): `ChatOpenAI` with a custom base URL. Gemini is the default (through its OpenAI-compatible endpoint), and Ollama, DeepSeek and OpenRouter work by changing the variables.
+- **One interface:** all application code depends on LangChain's `BaseChatModel` and never on a provider class. A small `ChatModel` class holds the LangChain model together with its name and provider; it is the only place that names a provider, and the usage records take the model name and provider from it.
+- **Configuration:** `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY` and `LLM_BASE_URL`.
+    - `gemini`, `ollama`, `openai` and `openrouter`: `ChatOpenAI` with a custom base URL (Gemini through its OpenAI-compatible endpoint). Another OpenAI-compatible server works the same way by changing the variables.
     - `anthropic`: `ChatAnthropic`, with no code changes elsewhere.
 - **Retries:** transient LLM errors (429/5xx) are retried by the model's built-in retry (`maxRetries`) with backoff.
-- **Observability and tests:** the provider and model are recorded on every LangSmith trace and in the `usage` table. Tests inject a fake `BaseChatModel` that returns scripted responses (including tool calls) and run offline.
+- **Observability and tests:** the provider and model are recorded on every LangSmith trace and in the `llm_usage` table. Tests inject a fake `BaseChatModel` that returns scripted responses (including tool calls) and run offline.
 
 ## Review Design
 
@@ -121,7 +121,7 @@ The pipeline is a LangGraph `StateGraph`. Deterministic steps are ordinary nodes
 | `Send`                                                                                | Fan-out: one `lensRouter` run per batch, then one lens worker per chosen lens                              |
 | `Command` (`goto` with `Send`s)                                                       | The `lensRouter` sends the batch to the chosen lenses                                                      |
 | Compiled graph invoked from a node                                                    | Each lens worker runs the lens agent (agents-with-tools pattern: `llmCall`, `ToolNode`, conditional edge)  |
-| `retryPolicy` on nodes                                                                | `prepare`, `post` and `save` (transient GitHub and database errors)                                        |
+| `retryPolicy` on nodes                                                                | `prepare`, `staleCheck`, `post` and `save` (transient GitHub and database errors)                          |
 | Recursion limit                                                                       | A backstop only; the agent's real limits are LLM-call and token counters in its state                      |
 | `maxConcurrency`                                                                      | Caps parallel lens runs (provider rate limits)                                                             |
 | Node and graph testing (`graph.nodes`, invoking the compiled graph with a fake model) | Test suite                                                                                                 |
@@ -137,6 +137,7 @@ The pipeline is a LangGraph `StateGraph`. Deterministic steps are ordinary nodes
 | `batches`                                                              | File groups under the token budget                                                                                                       | `chunk`      |
 | `findings`                                                             | Raw findings from all workers (reducer: concatenate)                                                                                     | Lens workers |
 | `lensFailures`                                                         | IDs of lenses that failed (reducer: concatenate)                                                                                         | Lens workers |
+| `usage`                                                                | One record per lens run: pipeline step, model, provider, model calls, tokens, latency (reducer: concatenate)                             | Lens workers |
 | `mergedFindings`                                                       | Findings with duplicates removed, sorted by severity                                                                                     | `merge`      |
 
 #### Pipeline
@@ -159,7 +160,7 @@ flowchart TD
     H --> I{"stale check<br/>head SHA unchanged? (is the PR still at the commit we reviewed?)"}
     I -- "no: Command goto END" --> J["END: discard result"]
     I -- "yes: Command goto post" --> K["post<br/>create or edit the single comment"]
-    K --> L["save<br/>reviews, findings, usage to MySQL"]
+    K --> L["save<br/>reviews, findings, llm usage to MySQL"]
     L --> M["END"]
 ```
 
@@ -185,7 +186,7 @@ flowchart TD
 
 | Error                                                   | Handled by                                                                                                                            |
 | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Transient (GitHub, database, network)                   | `retryPolicy` on `prepare`, `post` and `save`                                                                                         |
+| Transient (GitHub, database, network)                   | `retryPolicy` on `prepare`, `staleCheck`, `post` and `save`                                                                           |
 | Transient LLM errors (429/5xx)                          | The chat model's built-in retry with backoff                                                                                          |
 | LLM-recoverable (tool error, invalid structured output) | The error goes back into state or the tool result and the model tries again, once for structured output                               |
 | A lens fails after its retries                          | The worker catches it, adds the lens ID to `lensFailures` and returns no findings, so the other lenses continue. The comment notes it |
@@ -195,9 +196,9 @@ flowchart TD
 
 #### Flow spec (steps)
 
-1. Webhook receives an event. Verify the signature. Stop if the delivery ID was already seen. Stop if the action is not `opened`, `synchronize`, `reopened` or `edited` (an edit to the title, description or base branch). Enqueue `{ repo, prNumber, headSha, deliveryId }` and respond 200.
-2. The BullMQ worker takes the job and invokes the compiled graph with `{ repo, prNumber, headSha, deliveryId }`.
-3. `prepare`: fetch the PR title, description and diff, make shallow checkouts of base and head, and drop skipped files. If the PR's head SHA is no longer the job's `headSha`, set `stale` and end the run (the newer push has already queued its own review).
+1. Webhook receives an event. Verify the signature. Stop if the delivery ID was already seen. Stop if the action is not `opened`, `synchronize`, `reopened` or `edited` (an edit to the title, description or base branch). Enqueue the job `{ installationId, owner, repo, prNumber, headSha, deliveryId }` with the delivery ID as the job id (BullMQ ignores a second job with the same id), then respond 200.
+2. The BullMQ worker takes the job (one job at a time, `concurrency: 1`) and invokes the compiled graph with the job data. Lenses still run in parallel inside the graph, capped by `maxConcurrency`. If the process dies mid-review, the job's lock expires and BullMQ runs it again (`maxStalledCount`).
+3. `prepare`: fetch the PR title, description and diff, make shallow checkouts of the merge base (the commit the PR branched from) and head, and drop skipped files. If the PR's head SHA is no longer the job's `headSha`, set `stale` and end the run (the newer push has already queued its own review).
 4. `chunk`: estimate tokens. If the estimate fits the budget, use one batch. Otherwise group files into batches under the budget, splitting a huge file by hunk. Every batch gets the same header (PR title, description, full file list). A conditional edge returns one `Send` to `lensRouter` for every batch, or goes straight to `merge` when no files are left to review.
 5. `lensRouter` (once per batch): the rules pick the required lenses, the LLM may add optional ones (see Lens selection), and the node returns a `Command` whose `goto` is one `Send` per chosen lens with that batch.
 6. Each lens worker runs the lens agent, the graph in the diagram above, on its batch:
@@ -210,7 +211,7 @@ flowchart TD
 7. `merge`: send the findings to the model as a numbered list, using structured output. It returns groups of IDs that describe the same issue (for example the same issue found by two lenses or in two batches). For each group, keep the most severe finding and drop the rest. The model only returns IDs and never rewrites findings. Then sort by severity.
 8. Stale check: fetch the PR's current head SHA (the ID of its latest commit). If it differs from the job's `headSha`, that means the developer pushed again while the review was going on, so return `Command({ goto: END })`. The new push already queued its own review. Otherwise return `Command({ goto: "post" })`.
 9. `post`: build the comment (findings grouped by severity, citations as permalinks at the reviewed commit, plus the one-line note when needed), then create it, or edit it if one with the hidden marker already exists.
-10. `save`: write `reviews`, `findings` and `usage` to MySQL, using an upsert keyed by delivery ID so a retried job does not create duplicate rows. `post` and `save` are separate nodes so a failed save is retried without posting again.
+10. `save`: write `reviews`, `findings` and `llm_usage` to MySQL (the schema is managed by `db-migrate` migrations), using an upsert keyed by delivery ID so a retried job does not create duplicate rows. `post` and `save` are separate nodes so a failed save is retried without posting again.
 
 ## References
 

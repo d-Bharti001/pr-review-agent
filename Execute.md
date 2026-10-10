@@ -23,13 +23,14 @@ Build it as a LangGraph graph (see [Orchestration flow](./Plan.md#orchestration-
 
 #### Phase 3: Reliability (Days 6-8)
 
-- Webhook handler enqueues to BullMQ and returns 200 immediately.
+- Webhook handler enqueues to BullMQ with the delivery ID as the job id and returns 200 immediately. The worker runs with `concurrency: 1` (one review at a time per worker process).
 - Idempotency by GitHub delivery ID, plus retries with exponential backoff.
-- MySQL tables: `reviews` (with the head SHA, unique on delivery ID so a retried job updates its row), `findings`, `usage` (provider, model, tokens, latency, cost).
-- `retryPolicy` on `prepare`, `post` and `save`. Keep `post` and `save` as separate nodes so a failed save never posts twice.
-- Stale check node: before `post`, fetch the PR's current head SHA and return `Command({ goto: END })` if it has moved.
+- MySQL, with the schema managed by `db-migrate` migrations (`npm run migrate:up`). Tables: `reviews` (with the head SHA, unique on delivery ID so a retried job updates its row), `findings` (`locations` as JSON) and `llm_usage` (pipeline step, provider, model, tokens, latency, cost). The graph collects usage records in state and `save` writes them in one transaction.
+- `retryPolicy` on `prepare`, `staleCheck`, `post` and `save` (retrying a cheap step is better than re-running every lens after a BullMQ retry, because there is no checkpointer). Keep `post` and `save` as separate nodes so a failed save never posts twice. `prepare` starts from an empty work directory so it can be retried.
+- Stale check: `prepare` ends the run if the head SHA already moved, and a `staleCheck` node before `post` sets `stale` if it moved during the review (a conditional edge goes to `END`).
 - Deduplication: the `merge` node (LLM grouping) removes duplicate findings within a run. On `synchronize` or `edited`, review the full diff and rebuild the comment from the new findings, so findings fixed by the push disappear and nothing is duplicated.
 - Edit the single comment in place instead of posting a new one per push.
+- Crash recovery: Redis runs with an append-only file so queued jobs survive a restart, and the worker sets `lockDuration` and `maxStalledCount`, so a review interrupted by a crash is run again.
 - Graceful shutdown: on SIGTERM and SIGINT, stop accepting webhooks (close the HTTP server), call `worker.close()` so the active job finishes, then close the Redis and MySQL connections. Set the shutdown timeout below Docker's `stop_grace_period`. A job that does not finish in time is left for BullMQ to retry from the start.
 - Tests (Vitest + Testcontainers), in the LangGraph way:
     - Whole graph: compile the graph, inject a fake `BaseChatModel`, and invoke it. Cases: same issue from two lenses merged into one, a failed lens noted in the comment but not blocking the others, invalid structured output retried then dropped, an oversized diff chunked.
@@ -42,7 +43,7 @@ Build it as a LangGraph graph (see [Orchestration flow](./Plan.md#orchestration-
 
 #### Phase 4: Ship and prove it (Days 9-10)
 
-- Dockerfile and Docker Compose (app, worker, Redis, MySQL), with `stop_grace_period` set.
+- Dockerfile and Docker Compose (app, worker, Redis, MySQL, and a one-off step that runs `db-migrate up`), with `stop_grace_period` set. The image includes `git` and `ripgrep`, and runs the compiled output (`npm run build`, then `node build/server.js` and `node build/worker.js`).
 - Deploy to a DigitalOcean droplet behind Nginx and Cloudflare, with HTTPS.
 - GitHub Actions: test, build and deploy on merge to main.
 - LangSmith observability: enable tracing through environment variables (`LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`). Each review is one trace showing every node, model call and tool call. Tag traces with the repo, PR number, head SHA and delivery ID. Tracing is off when no key is set, including in tests.

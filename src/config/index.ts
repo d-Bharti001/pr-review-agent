@@ -16,6 +16,9 @@ const envSchema = z.object({
     MYSQL_USER: z.string().min(1),
     MYSQL_PASSWORD: z.string().min(1),
 
+    REDIS_HOST: z.string().min(1),
+    REDIS_PORT: z.coerce.number().int().min(1).max(65535),
+
     GITHUB_APP_ID: z.string().min(1),
     GITHUB_PRIVATE_KEY_PATH: z.string().min(1),
     GITHUB_WEBHOOK_SECRET: z.string().min(1),
@@ -45,6 +48,9 @@ const PORT = env.PORT;
 
 const DATABASE_URL = `mysql://${env.MYSQL_USER}:${env.MYSQL_PASSWORD}@${env.MYSQL_HOST}:${env.MYSQL_PORT}/${env.MYSQL_DATABASE}`;
 
+const REDIS_HOST = env.REDIS_HOST;
+const REDIS_PORT = env.REDIS_PORT;
+
 const GITHUB_APP_ID = env.GITHUB_APP_ID;
 const GITHUB_PRIVATE_KEY = readFileSync(env.GITHUB_PRIVATE_KEY_PATH, "utf-8");
 const GITHUB_WEBHOOK_SECRET = env.GITHUB_WEBHOOK_SECRET;
@@ -62,6 +68,8 @@ export {
     TEST,
     PORT,
     DATABASE_URL,
+    REDIS_HOST,
+    REDIS_PORT,
     GITHUB_APP_ID,
     GITHUB_PRIVATE_KEY,
     GITHUB_WEBHOOK_SECRET,
