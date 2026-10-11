@@ -1,0 +1,13 @@
+node_modules
+build
+secrets
+manifests
+tests
+vitest.config.mts
+.env
+.env.*
+!.env.example
+npm-debug.log
+.git
+.gitignore
+.prettierrc

@@ -1,3 +1,20 @@
+x-app: &app
+  build: .
+  image: pr-review-agent:1.0.0
+  restart: unless-stopped
+  env_file: .env
+  # Overriding env variables: inside the compose network the services use their own names
+  environment:
+    NODE_ENV: production
+    PORT: 8081
+    MYSQL_HOST: mysql
+    MYSQL_PORT: 3306
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+    GITHUB_PRIVATE_KEY_PATH: /app/secrets/private-key.pem
+  volumes:
+    - ./secrets:/app/secrets:ro
+
 services:
   mysql:
     image: mysql:8.4
@@ -28,6 +45,45 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["node", "node_modules/.bin/db-migrate", "up"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  server:
+    <<: *app
+    command: ["node", "build/src/server.js"]
+    ports:
+      - "127.0.0.1:8081:8081"
+    stop_grace_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "fetch('http://127.0.0.1:8081/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  worker:
+    <<: *app
+    command: ["node", "build/src/worker.js"]
+    stop_grace_period: 6m
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
 
 volumes:
   mysql-data:
