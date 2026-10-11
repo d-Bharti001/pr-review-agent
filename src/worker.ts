@@ -1,5 +1,6 @@
 import "src/config";
 import "src/utils/logger";
+import { awaitAllCallbacks } from "@langchain/core/callbacks/promises";
 import { Worker } from "bullmq";
 import dbPool from "src/database/pool";
 import redisConnection from "src/queue/connection";
@@ -39,6 +40,7 @@ async function shutdown(signal: string) {
     try {
         await worker.close(); // lets the active job finish
         await dbPool.end();
+        await awaitAllCallbacks(); // send any LangSmith traces still waiting
         clearTimeout(timer);
         process.exit(0);
     } catch (err) {

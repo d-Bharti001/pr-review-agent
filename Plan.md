@@ -223,3 +223,4 @@ LangGraph docs:
 - https://docs.langchain.com/oss/javascript/langgraph/application-structure
 - https://docs.langchain.com/oss/javascript/langgraph/test
 - https://docs.langchain.com/oss/javascript/langgraph/observability
+- https://docs.langchain.com/langsmith/trace-with-langgraph
