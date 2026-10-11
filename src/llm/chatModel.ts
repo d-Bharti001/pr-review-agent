@@ -1,6 +1,7 @@
-import { ChatAnthropic } from "@langchain/anthropic";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { ChatAnthropic } from "@langchain/anthropic";
 import { ChatOpenAI } from "@langchain/openai";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 
 const MAX_RETRIES = 3;
 
@@ -25,7 +26,16 @@ export class ChatModel {
                     maxRetries: MAX_RETRIES,
                 });
                 break;
+
             case "gemini":
+                this.model = new ChatGoogleGenerativeAI({
+                    apiKey: apiKey,
+                    model: llmModelName,
+                    maxRetries: MAX_RETRIES,
+                    ...(baseUrl ? { baseUrl } : {}),
+                });
+                break;
+
             case "ollama":
             case "openai":
             case "openrouter":
@@ -33,7 +43,7 @@ export class ChatModel {
                     apiKey: apiKey,
                     model: llmModelName,
                     maxRetries: MAX_RETRIES,
-                    configuration: { baseURL: baseUrl },
+                    configuration: { ...(baseUrl ? { baseURL: baseUrl } : {}) },
                 });
                 break;
             default:

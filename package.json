@@ -27,6 +27,7 @@
     "dependencies": {
         "@langchain/anthropic": "^1.5.12",
         "@langchain/core": "^1.2.17",
+        "@langchain/google-genai": "^2.3.2",
         "@langchain/langgraph": "^1.4.20",
         "@langchain/openai": "^1.6.2",
         "bullmq": "^6.3.12",

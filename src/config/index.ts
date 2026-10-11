@@ -24,8 +24,8 @@ const envSchema = z.object({
     GITHUB_WEBHOOK_SECRET: z.string().min(1),
 
     LLM_PROVIDER: z.enum(ALLOWED_LLM_PROVIDERS),
-    LLM_BASE_URL: z.url().min(1),
-    LLM_API_KEY: z.string().min(1),
+    LLM_BASE_URL: z.string(),
+    LLM_API_KEY: z.string(),
     LLM_MODEL: z.string().min(1),
 
     BATCH_TOKEN_BUDGET: z.coerce.number().int().positive().default(30_000),
