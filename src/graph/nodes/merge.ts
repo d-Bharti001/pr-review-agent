@@ -1,4 +1,4 @@
-import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { type AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { GraphNode } from "@langchain/langgraph";
 import { z } from "zod";
 
@@ -32,14 +32,22 @@ export function createMergeNode(chatModel: ChatModel): GraphNode<typeof ReviewSt
         const findings = state.findings;
         let kept = findings;
 
+        const startAt = Date.now();
+        let tokens = 0;
+        let called = false;
+
         if (findings.length > 1) {
             try {
-                const { groups } = await chatModel.model
-                    .withStructuredOutput(mergeSchema)
+                const result = await chatModel.model
+                    .withStructuredOutput(mergeSchema, { includeRaw: true })
                     .invoke([
                         new SystemMessage(MERGE_PROMPT),
                         new HumanMessage(findings.map(describe).join("\n")),
                     ]);
+
+                const { groups } = result.parsed;
+                called = true;
+                tokens = (result.raw as AIMessage).usage_metadata?.total_tokens ?? 0;
 
                 const seen = new Set<number>();
                 const dropped = new Set<number>();
@@ -64,6 +72,20 @@ export function createMergeNode(chatModel: ChatModel): GraphNode<typeof ReviewSt
             }
         }
 
-        return { mergedFindings: [...kept].sort((a, b) => rank(a) - rank(b)) };
+        return {
+            mergedFindings: [...kept].sort((a, b) => rank(a) - rank(b)),
+            usage: called
+                ? [
+                      {
+                          pipelineStep: "merge",
+                          model: chatModel.name,
+                          provider: chatModel.provider,
+                          llmCalls: 1,
+                          totalTokens: tokens,
+                          latencyMs: Date.now() - startAt,
+                      },
+                  ]
+                : [],
+        };
     };
 }

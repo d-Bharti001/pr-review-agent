@@ -1,6 +1,5 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { type BaseMessage, HumanMessage, SystemMessage, AIMessage } from "@langchain/core/messages";
-import { OutputParserException } from "@langchain/core/output_parsers";
 import {
     type GraphNode,
     START,
@@ -62,7 +61,9 @@ export function createLensAgent(
 ) {
     if (!chatModel.model.bindTools) throw new Error("The chat model does not support tool calling");
     const modelWithTools = chatModel.model.bindTools(tools);
-    const structuredModel = chatModel.model.withStructuredOutput(findingsResultSchema);
+    const structuredModel = chatModel.model.withStructuredOutput(findingsResultSchema, {
+        includeRaw: true,
+    });
 
     // Builds the first messages of the conversation from the input
     const initMessages: GraphNode<typeof AgentState> = (state) => ({
@@ -116,38 +117,44 @@ export function createLensAgent(
 
         const messages: BaseMessage[] = [...history, new HumanMessage(REPORT_INSTRUCTION)];
 
-        // One retry with the error message if the structured output is invalid
+        // One retry if the structured output is invalid
+        let reportCalls = 0;
+        let reportTokens = 0;
+
         for (let attempt = 1; attempt <= 2; attempt++) {
             try {
-                const result = await structuredModel.invoke(messages);
-                logger.info(`Lens ${lens.id} finished`, {
-                    findings: result.findings.length,
-                    llmCalls: state.llmCalls,
-                    tokens: state.tokensUsed,
-                    stopReason,
-                });
-                return { findings: result.findings };
-            } catch (err) {
-                const invalidOutput =
-                    err instanceof OutputParserException || err instanceof z.ZodError;
-                if (!invalidOutput) {
-                    logger.error(`Lens ${lens.id} report failed`, err);
-                    return { failed: true };
+                const { raw, parsed } = await structuredModel.invoke(messages);
+                reportCalls += 1;
+                reportTokens += (raw as AIMessage).usage_metadata?.total_tokens ?? 0;
+
+                if (parsed) {
+                    logger.info(`Lens ${lens.id} finished`, {
+                        findings: parsed.findings.length,
+                        llmCalls: state.llmCalls + reportCalls,
+                        tokens: state.tokensUsed + reportTokens,
+                        stopReason,
+                    });
+                    return {
+                        findings: parsed.findings,
+                        llmCalls: reportCalls,
+                        tokensUsed: reportTokens,
+                    };
                 }
 
-                logger.warn(
-                    `Invalid structured output by lens ${lens.id} (attempt ${attempt})`,
-                    err,
-                );
+                logger.warn(`Invalid structured output by lens ${lens.id} (attempt ${attempt})`);
                 messages.push(
                     new HumanMessage(
-                        `Your previous answer was not valid: ${err.message}. Return the findings again in the required structure.`,
+                        "Your previous answer was not valid. Return the findings again in the required structure.",
                     ),
                 );
+            } catch (err) {
+                logger.error(`Lens ${lens.id} report failed`, err);
+                return { failed: true, llmCalls: reportCalls, tokensUsed: reportTokens };
             }
         }
 
-        return { findings: [] }; // still invalid after the retry: no findings from this run
+        // still invalid after the retry: no findings from this run
+        return { findings: [], llmCalls: reportCalls, tokensUsed: reportTokens };
     };
 
     return new StateGraph(AgentState)
