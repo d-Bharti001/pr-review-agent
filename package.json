@@ -13,16 +13,21 @@
         "migrate:down": "node --env-file=.env node_modules/.bin/db-migrate down",
         "start": "node --env-file=.env build/src/server.js",
         "start:worker": "node --env-file=.env build/src/worker.js",
-        "test": "echo \"Error: no test specified\" && exit 1"
+        "test": "vitest run",
+        "test:unit": "vitest run --project unit",
+        "test:integration": "vitest run --project integration"
     },
     "author": "",
     "license": "ISC",
     "devDependencies": {
+        "@testcontainers/redis": "^12.2.0",
         "@types/express": "^5.0.6",
         "@types/node": "^26.6.4",
+        "testcontainers": "^12.2.0",
         "tsc-alias": "^1.0.11",
         "tsx": "^4.23.15",
-        "typescript": "^7.0.2"
+        "typescript": "^7.0.2",
+        "vitest": "^5.0.4"
     },
     "dependencies": {
         "@langchain/anthropic": "^1.5.12",
