@@ -1,0 +1,24 @@
+[Unit]
+Description=PR Review Agent - webhook server
+After=network-online.target mysql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+WorkingDirectory=/opt/pr-review/current
+EnvironmentFile=/opt/pr-review/.env
+ExecStart=/usr/bin/node build/src/server.js
+Restart=always
+RestartSec=5
+# The server only closes its listener and the queue on SIGTERM
+TimeoutStopSec=30
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,24 @@
+[Unit]
+Description=PR Review Agent - review worker
+After=network-online.target mysql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+WorkingDirectory=/opt/pr-review/current
+EnvironmentFile=/opt/pr-review/.env
+ExecStart=/usr/bin/node build/src/worker.js
+Restart=always
+RestartSec=5
+# On SIGTERM the worker finishes the active review before it exits (its own timeout is 5 minutes)
+TimeoutStopSec=360
+
+# Hardening. The worker runs git and ripgrep on untrusted repository content
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
