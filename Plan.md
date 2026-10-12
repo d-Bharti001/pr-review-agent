@@ -129,16 +129,17 @@ The pipeline is a LangGraph `StateGraph`. Deterministic steps are ordinary nodes
 
 **State:** State holds raw data only. Prompts and the comment text are formatted inside nodes.
 
-| Key                                                                    | Contents                                                                                                                                 | Updated by   |
-| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
-| `installationId`, `owner`, `repo`, `prNumber`, `headSha`, `deliveryId` | Job input                                                                                                                                | Input        |
-| `workDir`                                                              | Temporary folder with the base and head checkouts. Created by the service, deleted when the run ends; sent to workers in `Send` payloads | Input        |
-| `title`, `description`, `files`, `skippedFiles`, `stale`               | The PR as fetched, after skip rules. `stale` is set when the PR moved on since the job was queued                                        | `prepare`    |
-| `batches`                                                              | File groups under the token budget                                                                                                       | `chunk`      |
-| `findings`                                                             | Raw findings from all workers (reducer: concatenate)                                                                                     | Lens workers |
-| `lensFailures`                                                         | IDs of lenses that failed (reducer: concatenate)                                                                                         | Lens workers |
-| `usage`                                                                | One record per lens run: pipeline step, model, provider, model calls, tokens, latency (reducer: concatenate)                             | Lens workers |
-| `mergedFindings`                                                       | Findings with duplicates removed, sorted by severity                                                                                     | `merge`      |
+| Key                                                                    | Contents                                                                                                                                 | Updated by                          |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| `installationId`, `owner`, `repo`, `prNumber`, `headSha`, `deliveryId` | Job input                                                                                                                                | Input                               |
+| `workDir`                                                              | Temporary folder with the base and head checkouts. Created by the service, deleted when the run ends; sent to workers in `Send` payloads | Input                               |
+| `title`, `description`, `files`, `skippedFiles`, `stale`               | The PR as fetched, after skip rules. `stale` is set when the PR moved on since the job was queued                                        | `prepare`                           |
+| `batches`                                                              | File groups under the token budget                                                                                                       | `chunk`                             |
+| `findings`                                                             | Raw findings from all workers (reducer: concatenate)                                                                                     | Lens workers                        |
+| `lensFailures`                                                         | IDs of lenses that failed (reducer: concatenate)                                                                                         | Lens workers                        |
+| `lensRuns`                                                             | IDs of the lenses the router chose, one entry per lens run (reducer: concatenate). Compared with `lensFailures` to set the review status | `lensRouter`                        |
+| `usage`                                                                | One record per router, lens and merge run: pipeline step, model, provider, model calls, tokens, latency (reducer: concatenate)           | `lensRouter`, lens workers, `merge` |
+| `mergedFindings`                                                       | Findings with duplicates removed, sorted by severity                                                                                     | `merge`                             |
 
 #### Pipeline
 
@@ -211,7 +212,7 @@ flowchart TD
 7. `merge`: send the findings to the model as a numbered list, using structured output. It returns groups of IDs that describe the same issue (for example the same issue found by two lenses or in two batches). For each group, keep the most severe finding and drop the rest. The model only returns IDs and never rewrites findings. Then sort by severity.
 8. Stale check: fetch the PR's current head SHA (the ID of its latest commit). If it differs from the job's `headSha`, that means the developer pushed again while the review was going on, so return `Command({ goto: END })`. The new push already queued its own review. Otherwise return `Command({ goto: "post" })`.
 9. `post`: build the comment (findings grouped by severity, citations as permalinks at the reviewed commit, plus the one-line note when needed), then create it, or edit it if one with the hidden marker already exists.
-10. `save`: write `reviews`, `findings` and `llm_usage` to MySQL (the schema is managed by `db-migrate` migrations), using an upsert keyed by delivery ID so a retried job does not create duplicate rows. `post` and `save` are separate nodes so a failed save is retried without posting again.
+10. `save`: write `reviews`, `findings` and `llm_usage` to MySQL (the schema is managed by `db-migrate` migrations), using an upsert keyed by delivery ID so a retried job does not create duplicate rows. The review `status` is `completed` when no lens run failed, `partial` when some failed, and `failed` when all of them failed (`lensFailures` compared with `lensRuns`). `post` and `save` are separate nodes so a failed save is retried without posting again.
 
 ## References
 

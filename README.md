@@ -44,16 +44,16 @@ flowchart TD
     L --> M["END"]
 ```
 
-| Step         | What it does                                                                                                                        |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `prepare`    | Fetches PR info and changed files, skips lockfiles, generated and vendored files, and checks out the merge base and the head commit |
-| `chunk`      | Splits the diff into batches that fit `BATCH_TOKEN_BUDGET`                                                                          |
-| `lensRouter` | Picks the lenses for each batch                                                                                                     |
-| lenses       | One agent per lens and batch. It can read files and search code before reporting findings                                           |
-| `merge`      | Removes duplicate findings with an LLM and sorts by severity                                                                        |
-| `staleCheck` | Stops if the PR head moved on while the job was running                                                                             |
-| `post`       | Creates or edits the single PR comment                                                                                              |
-| `save`       | Stores the review, findings and LLM usage in MySQL in one transaction                                                               |
+| Step         | What it does                                                                                                                                                  |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prepare`    | Fetches PR info and changed files, skips lockfiles, generated and vendored files, and checks out the merge base and the head commit                           |
+| `chunk`      | Splits the diff into batches that fit `BATCH_TOKEN_BUDGET`                                                                                                    |
+| `lensRouter` | Picks the lenses for each batch                                                                                                                               |
+| lenses       | One agent per lens and batch. It can read files and search code before reporting findings                                                                     |
+| `merge`      | Removes duplicate findings with an LLM and sorts by severity                                                                                                  |
+| `staleCheck` | Stops if the PR head moved on while the job was running                                                                                                       |
+| `post`       | Creates or edits the single PR comment                                                                                                                        |
+| `save`       | Stores the review, findings and LLM usage in MySQL in one transaction. Review status: `completed`, `partial` (some lens runs failed) or `failed` (all failed) |
 
 `post` and `save` are separate nodes, so a failed save is retried without posting again.
 
@@ -122,6 +122,7 @@ State holds raw data only. Prompts and the comment text are formatted inside nod
 | `batches`                                                              | File groups under the token budget                                                                               | `chunk`                       |
 | `findings`                                                             | Raw findings from all workers, with model and provider (reducer: concatenate)                                    | Lens workers                  |
 | `lensFailures`                                                         | IDs of lenses that failed (reducer: concatenate)                                                                 | Lens workers                  |
+| `lensRuns`                                                             | IDs of the lenses the router chose, one entry per lens run (reducer: concatenate)                                | `lensRouter`                  |
 | `usage`                                                                | One record per router, lens and merge run: pipeline step, model, provider, calls, tokens, latency                | `lensRouter`, lenses, `merge` |
 | `mergedFindings`                                                       | Findings with duplicates removed, sorted by severity                                                             | `merge`                       |
 

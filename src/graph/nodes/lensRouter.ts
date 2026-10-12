@@ -7,7 +7,7 @@ import type { LensId } from "src/types/lens";
 import type { ChangedFile } from "src/types/pullRequest";
 import { OPTIONAL_LENSES, isDocsOnly, requiredLenses } from "src/graph/utils/selectLenses";
 import { ROUTER_PROMPT } from "src/graph/prompts/router";
-import { usageChannel } from "src/graph/state";
+import { lensRunsChannel, usageChannel } from "src/graph/state";
 
 // What `Send` hands to one router run. The key names match the lens subgraph's input.
 export const RouterState = new StateSchema({
@@ -19,6 +19,7 @@ export const RouterState = new StateSchema({
 
     // output (merged into ReviewState by its reducer)
     usage: usageChannel(),
+    lensRuns: lensRunsChannel(),
 });
 
 const PATCH_PREVIEW_CHARS = 1500;
@@ -84,9 +85,10 @@ export function createLensRouterNode(chatModel: ChatModel): GraphNode<typeof Rou
 
         const { batch, prTitle, prDescription, changedPaths, workDir } = state;
         return new Command({
-            update: called
-                ? {
-                      usage: [
+            update: {
+                lensRuns: lenses,
+                usage: called
+                    ? [
                           {
                               pipelineStep: "lensRouter",
                               model: chatModel.name,
@@ -95,9 +97,9 @@ export function createLensRouterNode(chatModel: ChatModel): GraphNode<typeof Rou
                               totalTokens: tokens,
                               latencyMs: Date.now() - startAt,
                           },
-                      ],
-                  }
-                : {},
+                      ]
+                    : [],
+            },
             goto: lenses.map(
                 (id) => new Send(id, { batch, prTitle, prDescription, changedPaths, workDir }),
             ),

@@ -13,6 +13,12 @@ export const findingsChannel = () =>
         { reducer: concat },
     );
 
+export const lensRunsChannel = () =>
+    new ReducedValue(
+        z.array(z.string()).default(() => []),
+        { reducer: concat },
+    );
+
 export const lensFailuresChannel = () =>
     new ReducedValue(
         z.array(z.string()).default(() => []),
@@ -48,6 +54,7 @@ export const ReviewState = new StateSchema({
 
     // set by the lens subgraphs (reducers: concatenate)
     findings: findingsChannel(),
+    lensRuns: lensRunsChannel(),
     lensFailures: lensFailuresChannel(),
 
     // set by the `merge` node
