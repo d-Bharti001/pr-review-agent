@@ -9,4 +9,6 @@ export interface IFindingRow extends RowDataPacket {
     message: string;
     suggestion: string;
     locations: unknown; // JSON
+    model: string;
+    provider: string;
 }

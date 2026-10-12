@@ -46,7 +46,14 @@ export const findingsResultSchema = z.object({
     findings: z.array(findingSchema),
 });
 
+// A finding as it moves through the pipeline: the LLM output plus who produced it
+export const storedFindingSchema = findingSchema.extend({
+    model: z.string(),
+    provider: z.string(),
+});
+
 export type Category = z.infer<typeof categorySchema>;
 export type Severity = z.infer<typeof severitySchema>;
 export type Finding = z.infer<typeof findingSchema>;
 export type Location = z.infer<typeof locationSchema>;
+export type StoredFinding = z.infer<typeof storedFindingSchema>;

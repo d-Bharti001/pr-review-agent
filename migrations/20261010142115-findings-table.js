@@ -25,7 +25,9 @@ exports.up = function (db) {
             message TEXT NOT NULL,
             suggestion TEXT NOT NULL,
             locations JSON NOT NULL,
-    
+            model VARCHAR(128) NOT NULL,
+            provider VARCHAR(128) NOT NULL,
+
             KEY idx_findings_review (review_id),
             CONSTRAINT fk_findings_review FOREIGN KEY (review_id)
                 REFERENCES reviews (id) ON DELETE CASCADE

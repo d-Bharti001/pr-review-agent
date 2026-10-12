@@ -56,7 +56,14 @@ export function createLensWorker(
 
             return result.failed
                 ? { lensFailures: [lens.id], usage }
-                : { findings: result.findings, usage };
+                : {
+                      findings: result.findings.map((f) => ({
+                          ...f,
+                          model: chatModel.name,
+                          provider: chatModel.provider,
+                      })),
+                      usage,
+                  };
         } catch (err) {
             logger.error(`Lens ${lens.id} failed`, err);
             return { lensFailures: [lens.id] };

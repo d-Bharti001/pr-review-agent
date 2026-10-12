@@ -8,6 +8,8 @@ export interface InsertFindingParams {
     message: string;
     suggestion: string;
     locations: unknown;
+    model: string;
+    provider: string;
 }
 
 export async function insertMultipleFindings(
@@ -24,14 +26,16 @@ export async function insertMultipleFindings(
         f.message,
         f.suggestion,
         JSON.stringify(f.locations),
+        f.model,
+        f.provider,
     ]);
 
-    const placeholders = new Array(findings.length).fill("(?, ?, ?, ?, ?, ?, ?)").join(", ");
+    const placeholders = new Array(findings.length).fill("(?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
 
     await conn.execute(
         `
             INSERT INTO findings
-                (review_id, category, severity, title, message, suggestion, locations)
+                (review_id, category, severity, title, message, suggestion, locations, model, provider)
             VALUES ${placeholders}
         `,
         values,
