@@ -69,13 +69,11 @@ export function createReadFileTool(workDir: string) {
                 offset: z
                     .number()
                     .int()
-                    .positive()
                     .optional()
                     .describe("First line to read, 1-based"),
                 limit: z
                     .number()
                     .int()
-                    .positive()
                     .optional()
                     .describe(
                         `Number of lines, default ${DEFAULT_LINES_LIMIT}, max ${MAX_LINES_LIMIT}`,
