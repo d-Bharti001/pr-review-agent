@@ -24,6 +24,10 @@ set -euo pipefail
 RELEASE="$APP/releases/$SHA"
 INCOMING="$APP/incoming"
 
+# The port of the application's express server
+PORT="$(grep -E '^PORT=' "$INCOMING/.env" | cut -d= -f2- | tr -d '"')"
+: "${PORT:?PORT is missing in the new .env}"
+
 # 1. Unpack the new version into its own folder and install its dependencies
 rm -rf "$RELEASE"
 mkdir -p "$RELEASE" "$APP/secrets"
@@ -53,7 +57,7 @@ sudo systemctl restart pr-review-server pr-review-worker
 
 # 5. Health check: the server must answer within about 30 seconds
 for _ in $(seq 1 10); do
-    if curl -fsS http://127.0.0.1:8081/health > /dev/null; then
+    if curl -fsS http://127.0.0.1:$PORT/health > /dev/null; then
         echo "Deployed $SHA"
 
         # Keep the 3 newest releases for rollbacks, and remove the uploaded files
