@@ -7,6 +7,8 @@ on:
   # A merged PR creates a push to main: that is what deploys
   push:
     branches: [main]
+  # Actions tab, "Run workflow": deploys the latest main again (for example after changing a variable)
+  workflow_dispatch:
 
 jobs:
   check:
@@ -40,7 +42,7 @@ jobs:
 
   deploy:
     needs: check
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     # Waits for approval here: add required reviewers to the "production" environment in the repo settings.
     # The secrets and variables below also come from this environment.
