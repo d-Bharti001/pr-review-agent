@@ -1,0 +1,142 @@
+name: CI/CD
+
+on:
+  # Tests run on every PR to main
+  pull_request:
+    branches: [main]
+  # A merged PR creates a push to main: that is what deploys
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+
+      - name: Set up node.js environment
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      - name: Run unit tests
+        run: npm run test:unit
+
+      # Integration tests. Testcontainers need Docker present in the runner.
+      - name: Run integration tests
+        run: npm run test:integration
+
+  deploy:
+    needs: check
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # Waits for approval here: add required reviewers to the "production" environment in the repo settings.
+    # The secrets and variables below also come from this environment.
+    environment: production
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    env:
+      APP_DIR: /opt/pr-review
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+
+      - name: Set up node.js environment
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Built here: a small server can run out of memory during tsc
+      - name: Build
+        run: npm run build
+
+      # Pack everything the server needs into one archive: the built app, the files for
+      # installing its dependencies, and the files for the database migrations
+      - name: Package the release
+        run: tar czf release.tgz build package.json package-lock.json migrations database.json
+
+      # GitHub secret and variable names cannot start with GITHUB_, so the GitHub App ones use GH_APP_
+      - name: Generate .env and the GitHub App key
+        env:
+          GH_APP_ID: ${{ vars.GH_APP_ID }}
+          GH_APP_WEBHOOK_SECRET: ${{ secrets.GH_APP_WEBHOOK_SECRET }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          BATCH_TOKEN_BUDGET: ${{ vars.BATCH_TOKEN_BUDGET }}
+          LANGSMITH_TRACING: ${{ vars.LANGSMITH_TRACING }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_PROJECT: ${{ vars.LANGSMITH_PROJECT }}
+          LANGSMITH_ENDPOINT: ${{ vars.LANGSMITH_ENDPOINT }}
+        run: |
+          umask 077
+          cat > .env <<EOT
+          NODE_ENV=production
+          PORT=8081
+          MYSQL_HOST=127.0.0.1
+          MYSQL_PORT=3306
+          MYSQL_DATABASE=pr_review
+          MYSQL_USER=pr_review_user
+          MYSQL_PASSWORD="${MYSQL_PASSWORD}"
+          REDIS_HOST=127.0.0.1
+          REDIS_PORT=6379
+          GITHUB_APP_ID="${GH_APP_ID}"
+          GITHUB_PRIVATE_KEY_PATH=${APP_DIR}/secrets/private-key.pem
+          GITHUB_WEBHOOK_SECRET="${GH_APP_WEBHOOK_SECRET}"
+          LLM_PROVIDER="${LLM_PROVIDER}"
+          LLM_BASE_URL="${LLM_BASE_URL}"
+          LLM_API_KEY="${LLM_API_KEY}"
+          LLM_MODEL="${LLM_MODEL}"
+          BATCH_TOKEN_BUDGET="${BATCH_TOKEN_BUDGET}"
+          LANGSMITH_TRACING="${LANGSMITH_TRACING}"
+          LANGSMITH_API_KEY="${LANGSMITH_API_KEY}"
+          LANGSMITH_PROJECT="${LANGSMITH_PROJECT}"
+          LANGSMITH_ENDPOINT="${LANGSMITH_ENDPOINT}"
+          EOT
+          printf '%s\n' "$GH_APP_PRIVATE_KEY" > private-key.pem
+
+      - name: Set up SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      # Copy the files to a temporary "incoming" folder on the server
+      - name: Upload
+        env:
+          TARGET: ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}
+        run: |
+          ssh -i ~/.ssh/id_deploy "$TARGET" "rm -rf ${APP_DIR}/incoming && mkdir -p ${APP_DIR}/incoming"
+          scp -i ~/.ssh/id_deploy release.tgz .env private-key.pem deploy/deploy.sh "$TARGET:${APP_DIR}/incoming/"
+
+      # Run the deploy script on the server (see deploy/deploy.sh): unpack, check the settings,
+      # migrate the database, switch to the new version, check that it is healthy, roll back if not
+      - name: Release
+        env:
+          TARGET: ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}
+        run: ssh -i ~/.ssh/id_deploy "$TARGET" "APP=${APP_DIR} SHA=${GITHUB_SHA} bash ${APP_DIR}/incoming/deploy.sh"
