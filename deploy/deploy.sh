@@ -42,7 +42,9 @@ node --env-file="$INCOMING/.env" node_modules/.bin/db-migrate up
 
 # 4. Switch over: remember what is running, install the new settings, point "current" at the
 #    new release and restart. Restarting the worker waits for a running review to finish.
-PREVIOUS="$(readlink -f "$APP/current" || true)"
+# (`readlink -f` would return the path itself when "current" does not exist yet, on the first deployment)
+PREVIOUS=""
+if [ -L "$APP/current" ]; then PREVIOUS="$(readlink -f "$APP/current")"; fi
 if [ -f "$APP/.env" ]; then cp "$APP/.env" "$APP/.env.prev"; fi
 install -m 600 "$INCOMING/.env" "$APP/.env"
 install -m 600 "$INCOMING/private-key.pem" "$APP/secrets/private-key.pem"
@@ -64,6 +66,7 @@ done
 
 # 6. The new version did not come up: go back to the previous one and fail the deployment
 echo "Health check failed, rolling back"
+systemctl status pr-review-server pr-review-worker --no-pager || true
 if [ -n "$PREVIOUS" ]; then
     ln -sfn "$PREVIOUS" "$APP/current"
     if [ -f "$APP/.env.prev" ]; then install -m 600 "$APP/.env.prev" "$APP/.env"; fi
