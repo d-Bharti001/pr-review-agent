@@ -20,7 +20,7 @@ Copy `.env.example` to `.env` and fill in the GitHub App and LLM values.
 docker compose up --build
 ```
 
-This starts MySQL and Redis, runs the migrations, and starts the server (port 8081, `GET /health`) and the worker. Put the private key at `secrets/private-key.pem`; the compose file mounts `./secrets` read-only.
+This starts MySQL and Redis, runs the migrations, and starts the server (port 3031, `GET /health`) and the worker. Put the private key at `secrets/private-key.pem`; the compose file mounts `./secrets` read-only.
 
 - View logs: `docker compose logs -f server worker`
 - Stop everything: `docker compose down`; add `-v` to also delete the database and queue data.
@@ -38,12 +38,12 @@ npm run dev:worker    # review worker
 
 **Receiving GitHub webhooks locally (ngrok):**
 
-1. Start the app, then run `ngrok http 8081`.
+1. Start the app, then run `ngrok http 3031`.
 2. Copy the forwarding URL that ngrok prints (`https://....ngrok-free.app`).
 3. In the GitHub App settings, set the Webhook URL to `<forwarding URL>/webhook`.
 4. Open or update a pull request. The delivery appears in the App's **Advanced** tab, under **Recent deliveries**.
 
-The URL changes each time ngrok restarts; to keep it fixed, claim the free static domain in your ngrok account (Domains) and start the tunnel with `ngrok http --url=<your-domain> 8081`.
+The URL changes each time ngrok restarts; to keep it fixed, claim the free static domain in your ngrok account (Domains) and start the tunnel with `ngrok http --url=<your-domain> 3031`.
 
 ## Setup with systemd (no Docker)
 
@@ -236,9 +236,11 @@ A merge into `main` is a push to `main`, so that is what deploys. A PR that is o
 In the repository, create the environment `production` (Settings, Environments) and add yourself as a **required reviewer** (that is the approval step). Add these to the environment:
 
 - **Secrets:** `GH_APP_WEBHOOK_SECRET`, `GH_APP_PRIVATE_KEY` (the whole `.pem`), `MYSQL_PASSWORD`, `LLM_API_KEY`, `LANGSMITH_API_KEY`, `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`.
-- **Variables:** `GH_APP_ID`, `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`, `BATCH_TOKEN_BUDGET`, `LANGSMITH_TRACING`, `LANGSMITH_PROJECT`, `LANGSMITH_ENDPOINT`, `DEPLOY_USER` (`deploy`), `DEPLOY_HOST` (the server's IP or domain).
+- **Variables:** `GH_APP_ID`, `PORT` (`3031`), `MYSQL_HOST` and `MYSQL_PORT` (`127.0.0.1`, `3306`), `REDIS_HOST` and `REDIS_PORT` (`127.0.0.1`, `6379`), `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL`, `BATCH_TOKEN_BUDGET`, `LANGSMITH_TRACING`, `LANGSMITH_PROJECT`, `LANGSMITH_ENDPOINT`, `DEPLOY_USER` (`deploy`), `DEPLOY_HOST` (the server's IP or domain).
 
 GitHub does not allow names that start with `GITHUB_`, which is why the app values are called `GH_APP_*`. The workflow turns them into the `GITHUB_*` settings the app expects. To add a new setting to the app, add it to `.env.example`, to the "Generate .env" step of the workflow, and to the environment.
+
+The Nginx file (`proxy_pass`) has the app's port written in it, so keep it equal to the `PORT` variable.
 
 Also set the GitHub App's webhook URL to `https://DOMAIN_NAME/webhook`.
 
@@ -249,7 +251,7 @@ Merge a pull request into `main` and approve the deployment in GitHub. Then, on 
 ```bash
 systemctl status pr-review-server pr-review-worker
 journalctl -u pr-review-worker -f
-curl http://127.0.0.1:8081/health
+curl http://127.0.0.1:3031/health
 ```
 
 Open a test pull request. In the GitHub App's "Advanced" tab, the recent deliveries should show a `200`.

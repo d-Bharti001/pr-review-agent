@@ -6,7 +6,7 @@ x-app: &app
   # Overriding env variables: inside the compose network the services use their own names
   environment:
     NODE_ENV: production
-    PORT: 8081
+    PORT: 3031
     MYSQL_HOST: mysql
     MYSQL_PORT: 3306
     REDIS_HOST: redis
@@ -25,7 +25,7 @@ services:
       MYSQL_USER: pr_review_user
       MYSQL_PASSWORD: pr_review_password
     ports:
-      - "127.0.0.1:8082:3306"
+      - "127.0.0.1:3032:3306"
     volumes: [mysql-data:/var/lib/mysql]
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
@@ -38,7 +38,7 @@ services:
     container_name: pr_review_agent_redis
     command: ["redis-server", "--appendonly", "yes"] # Append-only file: queued and active jobs survive a Redis restart
     ports:
-      - "127.0.0.1:8083:6379"
+      - "127.0.0.1:3033:6379"
     volumes: [redis-data:/data]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -58,7 +58,7 @@ services:
     <<: *app
     command: ["node", "build/src/server.js"]
     ports:
-      - "127.0.0.1:8081:8081"
+      - "127.0.0.1:3031:3031"
     stop_grace_period: 30s
     depends_on:
       migrate:
@@ -70,7 +70,7 @@ services:
         - "CMD"
         - "node"
         - "-e"
-        - "fetch('http://127.0.0.1:8081/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+        - "fetch('http://127.0.0.1:3031/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
       interval: 10s
       timeout: 3s
       retries: 5
