@@ -20,6 +20,7 @@
     "author": "",
     "license": "ISC",
     "devDependencies": {
+        "@testcontainers/mysql": "^12.2.0",
         "@testcontainers/redis": "^12.2.0",
         "@types/express": "^5.0.6",
         "@types/node": "^26.6.4",
