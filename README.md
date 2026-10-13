@@ -6,6 +6,32 @@ A GitHub App that reviews pull requests with LLM agents. It reads the relevant p
 
 **Stack:** TypeScript, Node.js, Express, BullMQ, Redis, MySQL, db-migrate, LangGraph.js, LangChain.js, LangSmith, Octokit, zod, Docker Compose.
 
+### Example run
+
+Model used: `nvidia/nemotron-3-super-120b-a12b:free`
+Provider: `openrouter`
+
+**Each review is traced end to end in LangSmith:**
+
+<figure style="text-align: center;">
+  <img src="docs/images/langsmith-trace.png" alt="langsmith trace" width="90%" style="border: 1px solid #ddd; padding: 4px;">
+  <figcaption style="font-size: 0.85em;">LangSmith trace of a review</figcaption>
+</figure>
+
+**Comment on a GitHub PR:**
+
+<figure style="text-align: center;">
+  <img src="docs/images/review-comment.png" alt="review comment" width="80%" style="border: 1px solid #ddd; padding: 4px;">
+  <figcaption style="font-size: 0.85em;">A review comment on a pull request</figcaption>
+</figure>
+
+**Every review, finding and model call is saved in the database:**
+
+<figure style="text-align: center;">
+  <img src="docs/images/pr-review-database.png" alt="database tables" width="90%" style="border: 1px solid #ddd; padding: 4px;">
+  <figcaption style="font-size: 0.85em;">The <code>reviews</code>, <code>findings</code> and <code>llm_usage</code> tables</figcaption>
+</figure>
+
 ## How it works
 
 ```

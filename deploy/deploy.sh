@@ -9,7 +9,7 @@
 #   release.tgz, .env, private-key.pem, deploy.sh (this file)
 #
 # Layout on the server:
-#   $APP/releases/<sha>   one folder per deployed version
+#   $APP/releases/<time>-<short sha>   one folder per deployment
 #   $APP/current          a symlink to the release that is running
 #   $APP/.env             the settings of the running version
 #   $APP/secrets/         the GitHub App private key
@@ -21,7 +21,10 @@ set -euo pipefail
 : "${APP:?APP is not set}"
 : "${SHA:?SHA is not set}"
 
-RELEASE="$APP/releases/$SHA"
+# Every deployment gets its own folder, even for the same commit (a redeployment after a settings
+# change), so the running version is never overwritten and a failed deployment can be rolled back.
+SHORT_SHA="${SHA:0:7}"
+RELEASE="$APP/releases/$(date +%Y%m%d-%H%M%S)-$SHORT_SHA"
 INCOMING="$APP/incoming"
 
 # The port of the application's express server
@@ -29,8 +32,8 @@ PORT="$(grep -E '^PORT=' "$INCOMING/.env" | cut -d= -f2- | tr -d '"')"
 : "${PORT:?PORT is missing in the new .env}"
 
 # 1. Unpack the new version into its own folder and install its dependencies
-rm -rf "$RELEASE"
-mkdir -p "$RELEASE" "$APP/secrets"
+mkdir -p "$APP/releases" "$APP/secrets"
+mkdir "$RELEASE"
 tar xzf "$INCOMING/release.tgz" -C "$RELEASE"
 cd "$RELEASE"
 npm ci --omit=dev --no-audit --no-fund
@@ -58,7 +61,7 @@ sudo systemctl restart pr-review-server pr-review-worker
 # 5. Health check: the server must answer within about 30 seconds
 for _ in $(seq 1 10); do
     if curl -fsS http://127.0.0.1:$PORT/health > /dev/null; then
-        echo "Deployed $SHA"
+        echo "Deployed $SHORT_SHA"
 
         # Keep the 3 newest releases for rollbacks, and remove the uploaded files
         ls -1dt "$APP"/releases/* | tail -n +4 | xargs -r rm -rf
